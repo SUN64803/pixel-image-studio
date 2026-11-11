@@ -8,6 +8,14 @@ Everything runs on your machine: no account, no cloud API, no telemetry. The UI
 is served by a local Python engine on loopback and wrapped in an Electron
 window. The interface is available in **English and Thai**.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Studio (English)](docs/screenshots/studio-en.png) | ![LoRA training](docs/screenshots/train-en.png) |
+| ![Settings and language](docs/screenshots/settings-en.png) | ![Local assistant](docs/screenshots/assistant-en.png) |
+| ![Thai UI](docs/screenshots/studio-th.png) | *Captured in a clean demo workspace — no personal images or LoRAs.* |
+
 ## Features
 
 - **Multiple model families** — switch between SANA / SDXL / SD 1.5 from the UI.
