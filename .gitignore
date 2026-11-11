@@ -1,0 +1,21 @@
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+engine/.venv/
+
+# ── Node / Electron ─────────────────────────────────────────────
+electron/node_modules/
+electron/dist/
+electron/out/
+
+# ── runtime content (user-made, kept out of the repo) ──────────
+# data/   : generated gallery, thumbnails, history, train datasets
+# models/ : base model weights, user-trained/downloaded LoRAs, dirs.json
+# Both are re-created by the engine at runtime; base weights are
+# re-downloadable (see README) and user content stays on disk only.
+data/
+models/
+
+# ── logs ────────────────────────────────────────────────────────
+*.log

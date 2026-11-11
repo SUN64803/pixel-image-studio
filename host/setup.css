@@ -1,0 +1,50 @@
+/* setup page styles — extracted so CSP can stay strict (style-src 'self') */
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14; --panel: #11161d; --line: #22303f; --text: #e6edf3; --muted: #8b98a8;
+    --a: #8b5cf6; --b: #22d3ee; --err: #f87171; --ok: #34d399; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background:
+    radial-gradient(900px 480px at 50% -10%, rgba(139,92,246,.12), transparent 60%), var(--bg);
+    color: var(--text); font: 13px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Thai", sans-serif; }
+  main { max-width: 780px; margin: 0 auto; padding: 48px 22px 64px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+  .mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px;
+    background: linear-gradient(135deg, rgba(139,92,246,.25), rgba(34,211,238,.2));
+    border: 1px solid rgba(139,92,246,.4); color: #c4b5fd; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin: 0 0 16px; }
+  h2 { margin: 0 0 8px; font-size: 14px; }
+  p { margin: 8px 0; color: #c3cfdd; }
+  ol { margin: 8px 0 0; padding-left: 20px; color: #c3cfdd; }
+  li { margin: 6px 0; }
+  code, pre { font-family: ui-monospace, "JetBrains Mono", monospace; }
+  code { background: #0a1017; border: 1px solid #1c2734; border-radius: 6px; padding: 1px 6px; font-size: 12px; color: #a5e9f5; }
+  .cmd { position: relative; margin: 10px 0 2px; }
+  pre { margin: 0; padding: 12px 46px 12px 14px; background: #0a1017; border: 1px solid #1c2734; border-radius: 10px;
+    overflow: auto; font-size: 12px; color: #b7f0fb; white-space: pre-wrap; word-break: break-word; }
+  .copy { position: absolute; top: 7px; right: 7px; font: inherit; font-size: 11px; padding: 4px 9px;
+    color: #c9d6e4; background: #1a222d; border: 1px solid #2a3644; border-radius: 6px; cursor: pointer; }
+  .copy:hover { background: #243040; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--line); background: #0d131a; color: var(--muted); font-size: 11.5px; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .pill.ok { color: #9ff5c9; border-color: rgba(52,211,153,.35); } .pill.ok .dot { background: var(--ok); }
+  .pill.warn { color: #fde68a; border-color: rgba(251,191,36,.35); } .pill.warn .dot { background: var(--warn); }
+  .pill.err { color: #fca5a5; border-color: rgba(248,113,113,.4); } .pill.err .dot { background: var(--err); }
+  button.primary { font: inherit; padding: 8px 16px; border-radius: 9px; cursor: pointer; color: #ede9fe;
+    background: linear-gradient(135deg, rgba(139,92,246,.35), rgba(34,211,238,.28)); border: 1px solid rgba(139,92,246,.5); }
+  button.primary:hover { background: linear-gradient(135deg, rgba(139,92,246,.5), rgba(34,211,238,.38)); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--warn); }
+  pre.log { max-height: 240px; color: #b7c6d8; }
+  a { color: #a5e9f5; }
+</style>
+
+  /* were inline style= attributes (moved out for CSP) */
+  .row.flush { margin-top: 0; }
+  p.flush-bottom { margin-bottom: 0; }

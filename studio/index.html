@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PixelSmith Image Studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app" id="appRoot">
+
+  <!-- ─────────────── control panel ─────────────── -->
+  <aside class="panel" id="panel">
+    <div class="panel-inner">
+
+      <div class="panel-head">
+        <header class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm3 .5a1 1 0 0 0-1 1v7.6l2.7-2.7a1 1 0 0 1 1.4 0L13 14l1.9-1.9a1 1 0 0 1 1.4 0L19 14.8V6a1 1 0 0 0-1-1H7Zm2 2.2a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2Z"/></svg>
+          </div>
+          <div class="brand-text">
+            <h1>Image Studio</h1>
+            <p id="modelSub">SANA 1.5 · 1.6B · 1024px</p>
+          </div>
+          <span class="model-badge" id="modelBadge" title="สถานะโมเดล">
+            <span class="dot"></span><span id="modelBadgeText">กำลังเชื่อมต่อ</span>
+          </span>
+        </header>
+
+        <nav class="panel-tabs" id="panelTabs" aria-label="หมวดการใช้งาน">
+          <button type="button" class="panel-tab active" data-pane="create">สร้างภาพ</button>
+          <button type="button" class="panel-tab" data-pane="train">เทรน LoRA</button>
+          <button type="button" class="panel-tab" data-pane="settings">ตั้งค่า</button>
+        </nav>
+      </div>
+
+      <!-- ═══════════════ pane: สร้างภาพ ═══════════════ -->
+      <div class="pane active" data-pane="create">
+        <form id="form" autocomplete="off">
+
+          <div class="field">
+            <div class="label-row">
+              <label class="label" for="modelSelect">โมเดล</label>
+              <span class="hint" id="modelFamily">—</span>
+            </div>
+            <select id="modelSelect"></select>
+          </div>
+
+          <div class="field">
+            <div class="label-row">
+              <label class="label" for="prompt">พรอมป์ต</label>
+              <span class="hint" id="promptCount">0</span>
+            </div>
+            <div class="prompt-wrap">
+              <textarea id="prompt" rows="5" spellcheck="false"
+                placeholder="อธิบายภาพที่อยากได้… (ภาษาอังกฤษให้ผลดีที่สุด)"></textarea>
+              <button type="button" class="ghost-icon" id="idea" title="สุ่มไอเดีย">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2a7 7 0 0 0-4 12.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26A7 7 0 0 0 12 2Zm-2 18a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-1H10v1Z"/></svg>
+              </button>
+            </div>
+            <p class="micro">SANA เข้าใจภาษาอังกฤษได้ดีที่สุด · ใช้ “เพิ่มรายละเอียด” ช่วยขยายความ</p>
+          </div>
+
+          <div class="chips" id="styleChips" aria-label="สไตล์ภาพ"></div>
+
+          <details class="field details" id="presetBox" open>
+            <summary class="label">Prompt presets <span class="micro-inline">(บันทึก/ใช้/นำเข้า)</span></summary>
+            <div class="preset-list" id="presetList"></div>
+            <div class="preset-row">
+              <label class="mini-field grow">ชื่อพรีเซ็ต
+                <input type="text" id="presetName" maxlength="80" placeholder="ชื่อพรีเซ็ตใหม่">
+              </label>
+              <button type="button" class="ghost-btn" id="presetSave" title="บันทึกค่าในฟอร์มปัจจุบันเป็นพรีเซ็ต">บันทึกปัจจุบัน</button>
+            </div>
+            <div class="preset-row">
+              <button type="button" class="ghost-btn" id="presetImportCollection" title="อ่านจาก data/prompt-collection.txt">นำเข้าจาก collection</button>
+              <label class="mini-field grow">ไฟล์ .txt (A1111/collection)
+                <input type="file" id="presetImportFile" accept=".txt">
+              </label>
+            </div>
+            <p class="micro">ใช้พรีเซ็ต = เติม prompt/negative/ขนาด/steps/CFG/sampler + LoRA ที่มีในระบบ · แก้ค่าได้หลังใช้เสมอ</p>
+          </details>
+
+          <details class="field details" id="negativeBox">
+            <summary class="label">Negative prompt <span class="micro-inline">(สิ่งที่ไม่ต้องการ)</span></summary>
+            <textarea id="negative" rows="3" spellcheck="false" placeholder="low quality, blurry, watermark, deformed…"></textarea>
+          </details>
+
+          <details class="field details hidden" id="regionBox">
+            <summary class="label">Regional prompt <span class="micro-inline">(แยกพรอมป์ตตามโซน · SDXL)</span></summary>
+            <label class="switch">
+              <input type="checkbox" id="regionEnabled">
+              <span class="track"><span class="thumb"></span></span>
+              <span class="switch-text">เปิดใช้งาน regional</span>
+            </label>
+            <div class="region-toolbar">
+              <label class="mini-field">เลย์เอาต์
+                <select id="regionLayout">
+                  <option value="2">ซ้าย / ขวา</option>
+                  <option value="3">ซ้าย / กลาง / ขวา</option>
+                  <option value="4">2×2</option>
+                </select>
+              </label>
+            </div>
+            <div class="region-list" id="regionList"></div>
+            <p class="micro">พรอมป์ตหลัก = ฉาก/พื้นหลัง · พรอมป์ตโซน = ตัวละคร/วัตถุในโซนนั้น</p>
+          </details>
+
+          <label class="switch">
+            <input type="checkbox" id="enhance" checked>
+            <span class="track"><span class="thumb"></span></span>
+            <span class="switch-text">เพิ่มรายละเอียดพรอมป์ตอัตโนมัติ <span class="micro-inline">(SANA in-context)</span></span>
+          </label>
+
+          <details class="field details hidden" id="loraBox">
+            <summary class="label">LoRA <span class="micro-inline">(สไตล์ / ตัวละคร)</span></summary>
+            <div class="lora-list" id="loraList"></div>
+            <p class="micro" id="loraHint">เลือก LoRA ที่เข้ากับโมเดลปัจจุบัน · น้ำหนัก 0.5–1.0 คือค่าที่ใช้บ่อย</p>
+          </details>
+
+          <details class="field details hidden" id="inpaintBox">
+            <summary class="label">Inpaint <span class="micro-inline">(แก้ไขส่วนที่เลือก · SDXL)</span></summary>
+            <div class="inpaint-inputs">
+              <label class="mini-field">ภาพต้นฉบับ
+                <input type="file" id="initImage" accept="image/png,image/jpeg,image/webp">
+              </label>
+              <label class="mini-field">มาส์ก (white = แก้ไข)
+                <input type="file" id="maskImage" accept="image/png,image/jpeg,image/webp">
+              </label>
+              <label class="mini-field">Strength (ความแรง)
+                <input type="number" id="inpaintStrength" min="0.0" max="1.0" step="0.05" value="0.75">
+              </label>
+            </div>
+            <p class="micro">ใช้กับ SDXL เท่านั้น — รูปสีขาวในมาส์กจะถูกแก้ไข</p>
+          </details>
+
+          <details class="field details hidden" id="hiresBox">
+            <summary class="label">Hires fix <span class="micro-inline">(upscale + เก็บรายละเอียด)</span></summary>
+            <label class="switch">
+              <input type="checkbox" id="hiresEnabled">
+              <span class="track"><span class="thumb"></span></span>
+              <span class="switch-text">เปิดใช้งาน hires fix</span>
+            </label>
+            <div class="hires-inputs">
+              <label class="mini-field">Scale (เท่า)
+                <input type="number" id="hiresScale" min="1.0" max="2.0" step="0.05" value="1.5">
+              </label>
+              <label class="mini-field">Denoise (ความแรง)
+                <input type="number" id="hiresStrength" min="0.05" max="0.75" step="0.05" value="0.35">
+              </label>
+            </div>
+            <p class="micro">สร้างภาพตามขนาดที่ตั้ง แล้วขยาย + ลงลึกรายละเอียดอีกรอบ · SANA/SDXL/SD1.5 · 1.25–1.5× ปลอดภัยกับ VRAM 10 GB · ใช้ร่วมกับ inpaint ไม่ได้</p>
+          </details>
+
+          <details class="field details" id="advancedBox">
+            <summary class="label">
+              <span>ตั้งค่าขั้นสูง</span>
+              <span class="adv-summary" id="advSummary">1024×1024 · 20 steps</span>
+            </summary>
+            <div class="advanced-body">
+              <div class="field">
+                <div class="label-row">
+                  <span class="label">ขนาดภาพ</span>
+                  <span class="hint" id="sizeHint">1.05 MP</span>
+                </div>
+                <div class="ratios" id="ratios"></div>
+                <div class="size-row">
+                  <label class="mini-field">กว้าง
+                    <input id="width" type="number" min="256" max="2048" step="32" value="1024" inputmode="numeric">
+                  </label>
+                  <span class="times">×</span>
+                  <label class="mini-field">สูง
+                    <input id="height" type="number" min="256" max="2048" step="32" value="1024" inputmode="numeric">
+                  </label>
+                </div>
+              </div>
+
+              <div class="grid2">
+                <div class="field">
+                  <div class="label-row"><label class="label" for="steps">Steps</label><b id="stepsVal">20</b></div>
+                  <input id="steps" type="range" min="2" max="50" step="1" value="20">
+                </div>
+                <div class="field">
+                  <div class="label-row"><label class="label" for="guidance">CFG</label><b id="cfgVal">4.5</b></div>
+                  <input id="guidance" type="range" min="1" max="10" step="0.1" value="4.5">
+                </div>
+              </div>
+
+              <div class="grid2">
+                <div class="field">
+                  <label class="label" for="batch">จำนวนภาพ</label>
+                  <select id="batch">
+                    <option value="1">1 ภาพ</option>
+                    <option value="2">2 ภาพ</option>
+                    <option value="3">3 ภาพ</option>
+                    <option value="4">4 ภาพ</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="label" for="sampler">Sampler</label>
+                  <select id="sampler">
+                    <option value="dpm">DPM-Solver</option>
+                    <option value="euler">Euler</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="field">
+                <div class="label-row">
+                  <label class="label" for="seed">Seed</label>
+                  <span class="hint">-1 = สุ่ม</span>
+                </div>
+                <div class="seed-row">
+                  <input id="seed" type="number" min="-1" step="1" value="-1" inputmode="numeric">
+                  <button type="button" class="ghost-btn" id="dice" title="สุ่ม seed">🎲 สุ่ม</button>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <div class="panel-actions">
+            <div class="progress hidden" id="progress">
+              <div class="bar"><div class="fill" id="fill"></div></div>
+              <div class="prog-row">
+                <span id="progText" aria-live="polite">กำลังเตรียม…</span>
+                <span id="progTime"></span>
+              </div>
+            </div>
+            <button type="submit" class="generate" id="generate" title="Ctrl/⌘ + Enter">
+              <span class="gen-icon">✦</span><span class="gen-label">สร้างภาพ</span><span class="gen-key">Ctrl ↵</span>
+            </button>
+            <button type="button" class="cancel hidden" id="cancel">ยกเลิกการสร้าง</button>
+          </div>
+
+        </form>
+      </div>
+
+      <!-- ═══════════════ pane: เทรน LoRA ═══════════════ -->
+      <div class="pane" data-pane="train">
+        <details class="field details" id="trainerBox" open>
+          <summary class="label">LoRA Trainer <span class="micro-inline">(เทรนเอง · SANA / SDXL)</span></summary>
+          <div class="field">
+            <label class="mini-field">โมเดลฐานสำหรับเทรน
+              <select id="trainerModel"><option value="">— ใช้โมเดลที่เลือกอยู่ —</option></select>
+            </label>
+            <p class="micro" id="trainerModelNote"></p>
+          </div>
+          <div class="field">
+            <label class="mini-field">ชุดเทรนที่มีอยู่
+              <select id="trainerDs"><option value="">— เลือกชุดเทรน —</option></select>
+            </label>
+          </div>
+          <div class="trainer-new" id="trainerNewBox">
+            <div class="grid2">
+              <label class="mini-field">ชื่อชุดเทรน
+                <input type="text" id="dsName" maxlength="60" placeholder="ชื่อ dataset">
+              </label>
+              <label class="mini-field">Trigger word
+                <input type="text" id="dsTrigger" maxlength="40" placeholder="เช่น foxy">
+              </label>
+            </div>
+            <button type="button" class="primary" id="dsCreate">สร้าง dataset</button>
+          </div>
+          <div id="trainerActive" class="hidden">
+            <div class="trainer-head-row">
+              <b id="dsTitle">—</b>
+              <span class="hint" id="dsMeta"></span>
+            </div>
+            <div class="trainer-tools">
+              <label class="mini-field grow">Trigger word (แก้ได้)
+                <input type="text" id="dsTriggerEdit" maxlength="40" placeholder="เช่น mytrigger7">
+              </label>
+              <button type="button" class="ghost-btn" id="dsTriggerSave">บันทึก trigger</button>
+            </div>
+            <div class="trainer-tools">
+              <label class="mini-field grow">นำเข้ารูป (เลือกได้หลายใบ)
+                <input type="file" id="dsUpload" accept="image/png,image/jpeg,image/webp" multiple>
+              </label>
+              <button type="button" class="ghost-btn danger-hover" id="dsDelete" title="ลบ dataset นี้">ลบชุดนี้</button>
+            </div>
+            <div class="ds-audit" id="dsAudit"></div>
+            <div class="caption-tagbar" id="captionTagbar">
+              <span class="tagbar-label">แทรก tag มุม/ท่า:</span>
+              <button type="button" class="tag-btn" data-tag="front view">front view</button>
+              <button type="button" class="tag-btn" data-tag="side view">side view</button>
+              <button type="button" class="tag-btn" data-tag="three-quarter view">3/4 view</button>
+              <button type="button" class="tag-btn" data-tag="back view">back view</button>
+              <button type="button" class="tag-btn" data-tag="close-up">close-up</button>
+              <button type="button" class="tag-btn" data-tag="high angle">high angle</button>
+              <button type="button" class="tag-btn" data-tag="low angle">low angle</button>
+              <button type="button" class="tag-btn" data-tag="from behind">from behind</button>
+              <button type="button" class="tag-btn" data-tag="full body">full body</button>
+              <button type="button" class="tag-btn" data-tag="standing">standing</button>
+              <button type="button" class="tag-btn" data-tag="sitting">sitting</button>
+              <button type="button" class="tag-btn" data-tag="walking">walking</button>
+              <button type="button" class="tag-btn" data-tag="with another character">with another character</button>
+              <button type="button" class="tag-btn" data-tag="two people">two people</button>
+              <input type="text" id="customTagInput" class="tag-input" placeholder="tag อื่น ๆ…" maxlength="40">
+              <button type="button" id="customTagAdd" class="tag-btn tag-add" title="เพิ่ม tag ที่พิมพ์ (Enter)">+</button>
+              <span class="tag-custom-list" id="customTagList"></span>
+            </div>
+            <div class="caption-list" id="captionList"></div>
+            <button type="button" class="ghost-btn" id="captionsSave">บันทึก caption &amp; ประเภท</button>
+            <div class="trainer-params grid2">
+              <label class="mini-field">ชื่อ LoRA ผลลัพธ์
+                <input type="text" id="loraNameOut" maxlength="60" placeholder="my-character">
+              </label>
+              <label class="mini-field">เทรนต่อจาก LoRA เดิม
+                <select id="trainInitLora">
+                  <option value="">— เริ่มจากศูนย์ —</option>
+                </select>
+              </label>
+              <label class="mini-field">Rank
+                <select id="trainRank">
+                  <option value="4">4</option>
+                  <option value="8">8</option>
+                  <option value="16">16</option>
+                  <option value="32" selected>32</option>
+                  <option value="64">64</option>
+                </select>
+              </label>
+              <label class="mini-field">Steps
+                <input type="number" id="trainSteps" min="10" max="10000" step="10" value="1500">
+              </label>
+              <label class="mini-field">LR
+                <input type="number" id="trainLr" min="0.00001" max="0.0005" step="0.00001" value="0.0002">
+              </label>
+              <label class="mini-field">Resolution
+                <select id="trainRes">
+                  <option value="512">512</option>
+                  <option value="768">768</option>
+                  <option value="1024" selected>1024</option>
+                </select>
+              </label>
+              <label class="mini-field">Seed
+                <input type="number" id="trainSeed" min="-1" step="1" value="-1">
+              </label>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="trainEnhance" checked>
+              <span class="track"><span class="thumb"></span></span>
+              <span class="switch-text">ใช้ prompt enhance ตอนเทรน <span class="micro-inline">(ตรงกับ generate ปกติ)</span></span>
+            </label>
+            <details class="field details" id="trainAdvanced">
+              <summary class="label">ตัวเลือกขั้นสูง <span class="micro-inline">(คุณภาพต่อ step)</span></summary>
+              <div class="grid2">
+                <label class="mini-field">LR schedule
+                  <select id="trainScheduler">
+                    <option value="cosine" selected>Cosine + warmup</option>
+                    <option value="constant">Constant</option>
+                  </select>
+                </label>
+                <label class="mini-field">Timestep sampling
+                  <select id="trainSampling">
+                    <option value="logit_normal" selected>Logit-normal</option>
+                    <option value="shift">Shift (แบบเดิม)</option>
+                  </select>
+                </label>
+                <label class="mini-field">Checkpoint ทุก (steps)
+                  <input type="number" id="trainSaveEvery" min="0" max="20000" step="100" value="500">
+                </label>
+                <label class="mini-field">Grad accumulation
+                  <input type="number" id="trainGradAccum" min="1" max="8" step="1" value="1">
+                </label>
+                <label class="mini-field">รูปหลายตัวละคร
+                  <select id="trainMultiMode">
+                    <option value="exclude" selected>ไม่ใช้ (เฉพาะเดี่ยว)</option>
+                    <option value="weighted">ใช้แบบลดน้ำหนัก</option>
+                    <option value="include">ใช้เต็ม</option>
+                  </select>
+                </label>
+                <label class="mini-field">น้ำหนักรูปหลายตัวละคร (%)
+                  <input type="number" id="trainMultiWeight" min="5" max="100" step="5" value="25" disabled>
+                </label>
+                <label class="mini-field">โหมดระบายความร้อน
+                  <select id="trainThermalMode">
+                    <option value="throttle" selected>ชะลอ GPU (แนะนำ)</option>
+                    <option value="pause">พัก GPU</option>
+                  </select>
+                </label>
+                <label class="mini-field">เริ่มชะลอเมื่อ (°C)
+                  <input type="number" id="trainThermalThrottle" min="60" max="92" step="1" value="87">
+                </label>
+                <label class="mini-field">กลับมาเต็ม speed เมื่อ (°C)
+                  <input type="number" id="trainThermalResume" min="40" max="91" step="1" value="80">
+                </label>
+                <label class="mini-field">หยุดฉุกเฉินที่ (°C)
+                  <input type="number" id="trainThermalMax" min="80" max="93" step="1" value="90">
+                </label>
+                <label class="mini-field">ลดความเร็วต่อระดับ (%)
+                  <input type="number" id="trainThermalStep" min="1" max="25" step="1" value="5">
+                </label>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="trainEma">
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">EMA weights <span class="micro-inline">(เฉลี่ยน้ำหนักให้เนียนขึ้น — ทำให้ LoRA อ่อนลง/‖BA‖ ต่ำ ไม่แนะนำสำหรับ run สั้น)</span></span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="trainFlip">
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">สุ่มพลิกภาพซ้าย-ขวา <span class="micro-inline">(augmentation)</span></span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="trainThermalGuard" checked>
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">Thermal guard <span class="micro-inline">(ชะลอ GPU อัตโนมัติเมื่อร้อนเกิน — หยุดเฉพาะกรณีฉุกเฉิน)</span></span>
+              </label>
+              <p class="micro">Cosine + EMA + logit-normal ให้ผลดีขึ้นในจำนวน step ที่น้อยลง · checkpoint ช่วยเลือก step ที่ดีที่สุด · grad accumulation &gt;1 จะช้าลงตามจำนวนเท่า · โหมดชะลอจะลด clock ลงทีละ 5% สูงสุด 25% เมื่อถึง 87°C และกลับมาเร็วขึ้นเมื่อเย็นถึง 80°C (ถ้าไม่มีสิทธิ์ sudo จะหน่วงระหว่าง step แทน)</p>
+            </details>
+            <button type="button" class="primary" id="trainStart">🚀 เริ่มเทรน (เข้าคิว)</button>
+            <p class="micro">เทรน = ปล่อยโมเดล generate ก่อนเสมอ — งานอื่นในคิวจะรอจนเทรนจบ · caption ว่าง = ใช้ trigger word · ผลลัพธ์โผล่ในหน้า LoRA ทันที</p>
+            <p class="micro">💡 ค่าแนะนำ character LoRA: rank 32 · steps 3000–4000 · LR 0.00015 · 1024px · cosine + EMA · ใช้ trigger ที่ไม่ซ้ำ (เช่น mytrigger7) และให้ caption บรรยายฉาก/ท่า/ชุดที่ต่างกัน โดยไม่บรรยายลักษณะตัวละครที่เหมือนกันทุกภาพ</p>
+          </div>
+        </details>
+      </div>
+
+      <!-- ═══════════════ pane: ตั้งค่า ═══════════════ -->
+      <div class="pane" data-pane="settings">
+        <details class="field details" id="loraManagerBox" open>
+          <summary class="label">LoRA manager <span class="micro-inline">(จัดการ LoRA)</span></summary>
+          <div class="lora-manager-controls">
+            <label class="mini-field">นำเข้า LoRA
+              <input type="file" id="loraImportFile" accept=".safetensors">
+            </label>
+            <button type="button" class="primary" id="loraImportBtn">นำเข้า</button>
+          </div>
+          <p class="micro">นำ LoRA จากโฟลเดอร์อื่นเข้ามาใช้งาน</p>
+          <div class="lora-list" id="loraManagerList"></div>
+        </details>
+
+        <div class="field">
+          <div class="label-row">
+            <span class="label">ที่เก็บไฟล์</span>
+          </div>
+          <p class="micro">โมเดล: models/ · LoRA: models/loras/ · ภาพ: data/images/ · dataset: data/train/</p>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <span class="label">ผู้ช่วย AI</span>
+            <span class="hint">ทำงานในเครื่อง 100%</span>
+          </div>
+          <p class="micro">ผู้ช่วยทำงานในเครื่อง 100% — อ่าน/แก้ข้อมูลให้อัตโนมัติ (เติม tag, จัดการ caption, สั่งเจนภาพ) และอ่านรูปได้ด้วยโมเดล vision ในเครื่อง</p>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <span class="label">ภาษา / Language</span>
+          </div>
+          <select id="langSelect">
+            <option value="th">ไทย (Thai)</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ─────────────── results ─────────────── -->
+  <main class="stage">
+    <header class="stage-head">
+      <div>
+        <h2>ผลลัพธ์</h2>
+        <p id="stageSub">ภาพที่สร้างจะถูกเก็บไว้ในเครื่องนี้</p>
+      </div>
+      <div class="stage-actions">
+        <button type="button" class="ghost-btn" id="assistantToggle" title="เปิด/ปิดผู้ช่วย AI">✦ ผู้ช่วย</button>
+        <button type="button" class="ghost-btn" id="refresh" title="โหลดประวัติใหม่">↻</button>
+        <button type="button" class="ghost-btn" id="openFolder" title="เปิดโฟลเดอร์ภาพ">📁 โฟลเดอร์</button>
+        <button type="button" class="ghost-btn danger-hover" id="clearHistory" title="ล้างประวัติและลบไฟล์ภาพ">ล้างประวัติ</button>
+      </div>
+    </header>
+
+    <section class="live hidden" id="live">
+      <div class="live-head">
+        <span class="pulse"></span>
+        <h3 id="liveTitle">กำลังสร้างภาพ…</h3>
+        <span class="live-meta" id="liveMeta"></span>
+      </div>
+      <div class="bar"><div class="fill" id="liveFill"></div></div>
+      <div class="live-images" id="liveImages"></div>
+    </section>
+
+    <section class="live queue hidden" id="queuePanel">
+      <div class="live-head">
+        <span class="pulse pulse-queue"></span>
+        <h3>คิวงาน</h3>
+        <span class="live-meta" id="queueMeta"></span>
+      </div>
+      <div class="queue-list" id="queueList"></div>
+    </section>
+
+    <div class="gallery" id="gallery"></div>
+
+    <div class="empty" id="empty">
+      <div class="empty-art" aria-hidden="true">
+        <svg viewBox="0 0 120 120" width="120" height="120">
+          <defs><linearGradient id="eg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/>
+          </linearGradient></defs>
+          <rect x="14" y="20" width="92" height="80" rx="14" fill="none" stroke="url(#eg)" stroke-width="2.5" opacity=".8"/>
+          <circle cx="42" cy="48" r="8" fill="url(#eg)" opacity=".9"/>
+          <path d="M20 88l24-26 17 18 12-12 27 20" fill="none" stroke="url(#eg)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h3>ยังไม่มีภาพ</h3>
+      <p>เขียนพรอมป์ตแล้วกด <b>สร้างภาพ</b> — ผลลัพธ์จะถูกเก็บไว้ในเครื่องและแสดงที่นี่</p>
+      <div class="examples" id="examples"></div>
+    </div>
+
+    <button type="button" class="load-more hidden" id="loadMore">โหลดเพิ่ม</button>
+  </main>
+
+  <!-- ─────────────── assistant drawer (P0 shell) ─────────────── -->
+  <aside class="assistant-drawer" id="assistantDrawer" aria-label="ผู้ช่วย AI">
+    <header class="assistant-head">
+      <div class="assistant-title">
+        <span class="assistant-dot" aria-hidden="true"></span>
+        <h3>ผู้ช่วย AI</h3>
+        <span class="pill" id="assistantBrain" title="สมองผู้ช่วย">…</span>
+      </div>
+      <button type="button" class="ghost-btn" id="assistantClose" title="ปิด">✕</button>
+    </header>
+    <div class="assistant-modelbar">
+      <label for="assistantModelSelect">โมเดลผู้ช่วย</label>
+      <select id="assistantModelSelect" title="เลือกโมเดล Ollama ที่ติดตั้งในเครื่อง"></select>
+      <button type="button" class="ghost-btn" id="assistantModelRefresh" title="สแกนโมเดลใหม่">↻</button>
+    </div>
+    <div class="assistant-model-note" id="assistantModelNote"></div>
+    <div class="assistant-body" id="assistantBody">
+      <div class="assistant-log" id="assistantLog">
+        <div class="assistant-msg bot">
+          <div class="assistant-bubble">สวัสดีครับ — ผู้ช่วยทำงานในเครื่อง 100% (ไม่ส่งข้อมูลออก) พิมพ์คำสั่งหรือเลือกจากปุ่มด้านล่างได้เลย</div>
+        </div>
+        <div class="assistant-note">สิทธิ์: <span class="pill ok">อ่าน</span> ทำเลย · <span class="pill warn">แก้ข้อมูล</span> ทำเลย + Undo · <span class="pill err">ลบ/เทรน</span> ต้องยืนยัน</div>
+      </div>
+      <div class="assistant-quick" id="assistantQuick"></div>
+    </div>
+    <footer class="assistant-foot">
+      <input type="text" id="assistantInput" placeholder="พิมพ์คำสั่ง…" maxlength="2000" autocomplete="off">
+      <button type="button" class="primary" id="assistantSend">ส่ง</button>
+    </footer>
+  </aside>
+</div>
+
+<!-- ─────────────── lightbox ─────────────── -->
+<div class="modal hidden" id="lightbox" role="dialog" aria-modal="true">
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card lightbox-card">
+    <button type="button" class="modal-x" data-close="1" aria-label="ปิด">✕</button>
+    <div class="lb-image-wrap">
+      <button type="button" class="lb-nav prev" id="lbPrev" aria-label="ก่อนหน้า">‹</button>
+      <img id="lbImage" alt="">
+      <button type="button" class="lb-nav next" id="lbNext" aria-label="ถัดไป">›</button>
+      <div class="lb-counter" id="lbCounter"></div>
+    </div>
+    <div class="lb-side">
+      <div class="lb-head">
+        <h3>รายละเอียดภาพ</h3>
+        <span class="micro" id="lbDate"></span>
+      </div>
+      <div class="lb-prompt" id="lbPrompt"></div>
+      <div class="lb-actions">
+        <button type="button" class="btn primary" id="lbReuse">✦ ใช้การตั้งค่านี้</button>
+        <button type="button" class="btn" id="lbDownload">ดาวน์โหลด</button>
+        <button type="button" class="btn" id="lbCopyParams" title="คัดลอกพรอมป์ต + negative + ค่าตั้งต้น แบบ A1111">คัดลอก parameters</button>
+        <button type="button" class="btn danger" id="lbDelete">ลบ</button>
+      </div>
+      <dl class="meta" id="lbMeta"></dl>
+      <details class="lb-neg" id="lbNegBox">
+        <summary>Negative prompt</summary>
+        <p id="lbNeg"></p>
+      </details>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

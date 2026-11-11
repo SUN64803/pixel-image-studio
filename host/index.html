@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PixelSmith Image Studio</title>
+<link rel="stylesheet" href="/host/shell.css">
+</head>
+<body>
+
+<div id="bar">
+  <div class="mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm3 .5a1 1 0 0 0-1 1v7.6l2.7-2.7a1 1 0 0 1 1.4 0L13 14l1.9-1.9a1 1 0 0 1 1.4 0L19 14.8V6a1 1 0 0 0-1-1H7Zm2 2.2a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2Z"/></svg>
+  </div>
+  <div class="titles">
+    <b>PixelSmith Image Studio</b>
+    <span>SANA / SDXL / SD 1.5 · ทำงานในเครื่องนี้</span>
+  </div>
+  <span class="pill" id="modelPill"><span class="dot"></span><span id="modelText">กำลังเชื่อมต่อ…</span></span>
+  <span id="vram"></span>
+  <span class="sp"></span>
+  <button type="button" id="loadModel" class="accent" title="โหลดโมเดลขึ้นหน่วยความจำล่วงหน้า">โหลดโมเดล</button>
+  <button type="button" id="unloadModel" title="คืนหน่วยความจำ GPU">คืน VRAM</button>
+  <button type="button" id="openImages" title="เปิดโฟลเดอร์ภาพที่สร้าง">📁 ภาพ</button>
+  <button type="button" id="logs" title="ดู log ล่าสุดของ engine">log</button>
+  <button type="button" id="reload" title="โหลดหน้าใหม่">↻</button>
+</div>
+
+<div id="banner">
+  <span id="bannerText"></span>
+  <span class="sp"></span>
+  <button type="button" id="bannerClose">ปิด</button>
+</div>
+
+<div id="stage">
+  <iframe id="frame" src="/studio/" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+  <div id="connecting">
+    <div>
+      <div class="spin"></div>
+      <div>กำลังเปิดหน้า Image Studio…</div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="logModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>engine log · <span id="logPath" class="log-path" data-no-i18n></span></h3>
+      <span class="sp"></span>
+      <button type="button" id="logRefresh">↻ โหลดใหม่</button>
+      <button type="button" id="logClose">ปิด</button>
+    </div>
+    <pre id="logBody">…</pre>
+  </div>
+</div>
+
+<script src="/studio/i18n.js"></script>
+<script src="/host/shell.js"></script>
+</body>
+</html>

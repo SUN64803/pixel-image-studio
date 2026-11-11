@@ -1,0 +1,67 @@
+{
+  "name": "pixelsmith-image-studio",
+  "productName": "PixelSmith Image Studio",
+  "version": "1.3.2",
+  "description": "SANA 1.5 + SDXL local image generator as a desktop program: the studio in its own window, generating on this machine's GPU.",
+  "author": "PixelSmith Image Studio contributors",
+  "main": "main.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "portable": "electron-builder --dir",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^32.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "org.pixelsmith.image",
+    "productName": "PixelSmith Image Studio",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../engine",
+        "to": "engine",
+        "filter": ["**/*", "!.venv/**", "!__pycache__/**", "!*.pyc"]
+      },
+      { "from": "../studio", "to": "studio" },
+      { "from": "../host", "to": "host" }
+    ],
+    "directories": { "output": "dist" },
+    "win": {
+      "target": ["nsis", "portable", "zip"],
+      "icon": "icon.ico",
+      "artifactName": "PixelSmith-Image-Studio-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PixelSmith Image Studio",
+      "artifactName": "PixelSmith-Image-Studio-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "PixelSmith-Image-Studio-Portable-${version}.${ext}"
+    },
+    "mac": { "target": ["dmg"], "category": "public.app-category.graphics-design" },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Graphics",
+      "icon": "icon.png",
+      "artifactName": "PixelSmith-Image-Studio-${version}-${arch}.AppImage"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ติดตั้ง PixelSmith Image Studio</title>
+<link rel="stylesheet" href="/host/setup.css">
+</head>
+<body>
+<main>
+  <div class="brand">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm3 .5a1 1 0 0 0-1 1v7.6l2.7-2.7a1 1 0 0 1 1.4 0L13 14l1.9-1.9a1 1 0 0 1 1.4 0L19 14.8V6a1 1 0 0 0-1-1H7Zm2 2.2a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2Z"/></svg>
+    </div>
+    <div>
+      <h1>ติดตั้ง Image Studio</h1>
+      <div class="sub">SANA 1.5 · 1.6B · 1024px — ติดตั้งครั้งเดียว ใช้ได้ตลอด</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>สถานะเครื่องนี้</h2>
+    <div class="row flush">
+      <span class="pill" id="enginePill"><span class="dot"></span><span id="engineText">กำลังตรวจ…</span></span>
+      <span class="pill" id="modelPill"><span class="dot"></span><span id="modelText">โมเดล</span></span>
+      <span class="pill" id="gpuPill"><span class="dot"></span><span id="gpuText">GPU</span></span>
+    </div>
+    <p class="muted flush-bottom" id="stateLine"></p>
+  </div>
+
+  <div class="card">
+    <h2>1) ติดตั้ง engine + โมเดล</h2>
+    <p>เปิด terminal แล้วรัน (ดาวน์โหลด torch ~2.3 GB + โมเดล ~9 GB ครั้งแรกครั้งเดียว):</p>
+    <div class="cmd">
+      <button class="copy" data-copy="bash engine/setup.sh">คัดลอก</button>
+      <pre>bash engine/setup.sh</pre>
+    </div>
+    <p class="muted">ถ้ามีไฟล์ <code>SANA1.5_1.6B_1024px.pth</code> ในเครื่องอยู่แล้ว ใช้การแปลงแทนการโหลด transformer ได้:</p>
+    <div class="cmd">
+      <button class="copy" data-copy='bash engine/setup.sh --from-pth "/path/to/SANA1.5_1.6B_1024px.pth"'>คัดลอก</button>
+      <pre>bash engine/setup.sh --from-pth "/path/to/SANA1.5_1.6B_1024px.pth"</pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2) เปิดโปรแกรม</h2>
+    <div class="cmd">
+      <button class="copy" data-copy="bash electron/linux-setup.sh">คัดลอก</button>
+      <pre>bash electron/linux-setup.sh</pre>
+    </div>
+    <p class="muted">ครั้งแรกจะติดตั้ง Electron (~100 MB) แล้วเปิดหน้าต่างโปรแกรมให้อัตโนมัติ</p>
+  </div>
+
+  <div class="card">
+    <h2>log ล่าสุด</h2>
+    <pre class="log" id="logBox">—</pre>
+    <div class="row">
+      <button class="primary" id="retry" type="button">ตรวจใหม่ / เปิดโปรแกรม</button>
+      <a class="muted" href="/studio/">ไปที่หน้า Image Studio →</a>
+    </div>
+  </div>
+
+  <p class="muted">ทุกอย่างทำงานในเครื่องนี้ ไม่มีข้อมูลส่งออกอินเทอร์เน็ต · ภาพและประวัติเก็บในโฟลเดอร์ <code>data/</code></p>
+</main>
+
+<script src="/studio/i18n.js"></script>
+<script src="/host/setup.js"></script>
+</body>
+</html>
