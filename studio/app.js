@@ -1632,6 +1632,12 @@
 
     $("#lbImage").src = img.url;
     $("#lbImage").alt = params.prompt || "generated image";
+    const srcW = img.width || params.width || 0;
+    const canUpscale = !srcW || srcW <= 2048;
+    $("#lbUpscale").disabled = !canUpscale;
+    $("#lbUpscale").title = canUpscale
+      ? "ขยายด้วย Real-ESRGAN (คุณภาพสูงกว่า LANCZOS)"
+      : "ภาพใหญ่เกินไปสำหรับขยาย 4× (สูงสุด 8192px)";
     $("#lbCounter").textContent =
       images.length > 1 ? `${index + 1} / ${images.length}` : "";
     $("#lbPrev").disabled = images.length <= 1;
@@ -1699,6 +1705,56 @@
     if (event.key === "Escape") closeLightbox();
     else if (event.key === "ArrowLeft") stepLightbox(-1);
     else if (event.key === "ArrowRight") stepLightbox(1);
+  }
+
+  // ── ESRGAN upscale (queued like a generation job) ───────────────────────
+  async function upscaleCurrent() {
+    if (!state.lb) return;
+    const img = state.lb.record.images[state.lb.index];
+    if (!img || !img.file) return;
+    const btn = $("#lbUpscale");
+    if (btn.disabled) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "กำลังขยาย…";
+    try {
+      const res = await api("/api/upscale", {
+        method: "POST",
+        body: JSON.stringify({ file: img.file, scale: 4 }),
+      });
+      toast("กำลังขยายภาพด้วย ESRGAN…", "ok", 3000);
+      const job = await waitForJob(res.job_id);
+      if (job.status === "done") toast("ขยายภาพเสร็จแล้ว", "ok", 2500);
+      else if (job.status === "canceled") toast("ยกเลิกการขยายแล้ว", "warn", 2500);
+    } catch (err) {
+      toast(err.message, "err", 7000);
+    } finally {
+      btn.textContent = label;
+      // The job may have opened the new 4096² record: let renderLightbox()
+      // decide the disabled state instead of always re-enabling.
+      if (state.lb) renderLightbox();
+      else btn.disabled = false;
+    }
+  }
+
+  async function waitForJob(jobId) {
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const job = await api(`/api/jobs/${jobId}`);
+      if (
+        job.status === "done" ||
+        job.status === "error" ||
+        job.status === "canceled"
+      ) {
+        await refreshHistory(true);
+        const rec = state.history.find((r) => r.id === jobId);
+        if (rec) openLightbox(rec, 0);
+        if (job.status === "error") {
+          toast(job.error || "ขยายภาพไม่สำเร็จ", "err", 7000);
+        }
+        return job;
+      }
+    }
   }
 
   // ── panel tabs + assistant drawer ───────────────────────────────────────
@@ -2970,6 +3026,7 @@
     });
     $("#lbPrev").addEventListener("click", () => stepLightbox(-1));
     $("#lbNext").addEventListener("click", () => stepLightbox(1));
+    $("#lbUpscale").addEventListener("click", upscaleCurrent);
     $("#lbDownload").addEventListener("click", () => {
       if (state.lb) downloadImage(state.lb.record.images[state.lb.index]);
     });

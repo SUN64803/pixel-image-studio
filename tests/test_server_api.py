@@ -10,9 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import sana_engine as se
 import server as srv
+import upscaler as upr
 
 
 @pytest.fixture()
@@ -473,3 +475,84 @@ def test_guard_rejects_foreign_origin_post(client):
     )
     assert res.status_code == 200
     assert wait_until(lambda: active(client) == [])
+
+
+# ── ESRGAN upscale ──────────────────────────────────────────────────────────
+def _fake_upscale(self, image, scale=4, tile=None, on_progress=None, cancel=None):
+    if on_progress:
+        on_progress(1, 1)
+    return image.resize((image.width * scale, image.height * scale), Image.LANCZOS)
+
+
+def _make_source(name="upscale-src.png", size=(8, 6)):
+    se.IMAGES.mkdir(parents=True, exist_ok=True)
+    path = se.IMAGES / name
+    Image.new("RGB", size, (20, 40, 60)).save(path)
+    return path
+
+
+def test_upscale_info(client):
+    res = client.http.get("/api/upscale")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["scale"] == 4
+
+
+def test_upscale_missing_source(client):
+    res = client.http.post("/api/upscale", json={"file": "nope.png"})
+    assert res.status_code == 404
+
+
+def test_upscale_rejects_path_traversal(client):
+    res = client.http.post("/api/upscale", json={"file": "../history.json"})
+    assert res.status_code == 404
+
+
+def test_upscale_job_saves_new_image(client, monkeypatch):
+    src = _make_source()
+    monkeypatch.setattr(upr.RealESRGANUpscaler, "upscale", _fake_upscale)
+    res = client.http.post("/api/upscale", json={"file": src.name, "scale": 4})
+    assert res.status_code == 200, res.text
+    jid = res.json()["job_id"]
+    assert wait_until(
+        lambda: client.http.get(f"/api/jobs/{jid}").json()["status"]
+        in ("done", "error")
+    )
+    job = client.http.get(f"/api/jobs/{jid}").json()
+    assert job["status"] == "done", job
+    assert job["family"] == "upscale"
+    assert job["images"][0]["width"] == 32
+    assert job["images"][0]["height"] == 24
+    hist = client.http.get("/api/history?offset=0&limit=20").json()
+    assert any(r["id"] == jid for r in hist["items"])
+
+
+def test_upscale_tile_defaults_to_auto(client, monkeypatch):
+    src = _make_source("upscale-auto.png")
+    monkeypatch.setattr(upr.RealESRGANUpscaler, "upscale", _fake_upscale)
+    res = client.http.post("/api/upscale", json={"file": src.name, "scale": 4})
+    assert res.status_code == 200, res.text
+    jid = res.json()["job_id"]
+    assert wait_until(
+        lambda: client.http.get(f"/api/jobs/{jid}").json()["status"]
+        in ("done", "error")
+    )
+    job = client.http.get(f"/api/jobs/{jid}").json()
+    assert "tile" not in job["params"]  # left to pick_tile()
+
+
+def test_upscale_explicit_tile_is_clamped(client, monkeypatch):
+    src = _make_source("upscale-tile.png")
+    monkeypatch.setattr(upr.RealESRGANUpscaler, "upscale", _fake_upscale)
+    res = client.http.post(
+        "/api/upscale", json={"file": src.name, "scale": 4, "tile": 64}
+    )
+    assert res.status_code == 200, res.text
+    jid = res.json()["job_id"]
+    assert wait_until(
+        lambda: client.http.get(f"/api/jobs/{jid}").json()["status"]
+        in ("done", "error")
+    )
+    job = client.http.get(f"/api/jobs/{jid}").json()
+    assert job["params"]["tile"] == 128

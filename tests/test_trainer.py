@@ -453,6 +453,58 @@ def test_set_throttle_level_resets_clocks_at_zero(monkeypatch):
     assert state["clocks"] is None
 
 
+def test_supported_clocks_uses_top_memory_block(monkeypatch):
+    """nvidia-smi lists one block per memory clock — use the highest one."""
+    output = (
+        "    Supported Clocks\n"
+        "        Memory                                         : 5505 MHz\n"
+        "            Graphics                                   : 1911 MHz\n"
+        "            Graphics                                   : 1898 MHz\n"
+        "        Memory                                         : 405 MHz\n"
+        "            Graphics                                   : 607 MHz\n"
+        "            Graphics                                   : 139 MHz\n"
+    )
+    monkeypatch.setattr(st.subprocess, "check_output", lambda *a, **k: output)
+    monkeypatch.setattr(st, "_SUPPORTED_CLOCKS", {})
+    assert st.gpu_supported_clocks() == (5505, [1898, 1911])
+
+
+def test_clock_set_treats_unsupported_as_failure(monkeypatch):
+    """The P102-100 exits 0 but prints "not supported" — must fall back."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(st, "gpu_supported_clocks", lambda: (5505, [139, 1911]))
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout="Setting applications clocks is not supported for GPU 0.\n",
+            stderr="",
+        ),
+    )
+    monkeypatch.setitem(st._CLOCKS_ACTIVE, "value", False)
+    assert st._clock_set(0.95) is False
+    assert st._CLOCKS_ACTIVE["value"] is False
+
+
+def test_clock_set_accepts_real_success(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(st, "gpu_supported_clocks", lambda: (5505, [139, 1911]))
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout="All done.\n", stderr=""
+        ),
+    )
+    monkeypatch.setitem(st._CLOCKS_ACTIVE, "value", False)
+    assert st._clock_set(0.95) is True
+    assert st._CLOCKS_ACTIVE["value"] is True
+    monkeypatch.setitem(st._CLOCKS_ACTIVE, "value", False)
+
+
 def test_clock_reset_skips_when_no_cap_applied(monkeypatch):
     calls = []
     monkeypatch.setattr(st.subprocess, "run", lambda *a, **k: calls.append(a))

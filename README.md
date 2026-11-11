@@ -31,6 +31,9 @@ window. The interface is available in **English and Thai**.
 - **Inpainting (SDXL)** — edit a masked region.
 - **Hires fix (SANA / SDXL / SD 1.5)** — generate at a base size, then upscale
   and refine (1–2×, adjustable denoise).
+- **ESRGAN upscale** — upscale any image in the lightbox with Real-ESRGAN ×4
+  (pure PyTorch, tiled for small GPUs). The 64 MB model downloads once on first
+  use; the result is saved to history with the source prompt and metadata.
 - **Job queue** — queue up to 8 generations, reorder with ▲▼, cancel individual
   jobs with ✕.
 - **Prompt presets** — save prompt + negative + size/steps/CFG/sampler/LoRA
@@ -74,12 +77,12 @@ window. The interface is available in **English and Thai**.
 
 ### AppImage (recommended for new machines)
 
-Download `PixelSmith-Image-Studio-1.3.2-x86_64.AppImage` from the
+Download `PixelSmith-Image-Studio-1.4.0-x86_64.AppImage` from the
 [Releases](../../releases) page and make it executable:
 
 ```bash
-chmod +x PixelSmith-Image-Studio-1.3.2-x86_64.AppImage
-./PixelSmith-Image-Studio-1.3.2-x86_64.AppImage
+chmod +x PixelSmith-Image-Studio-1.4.0-x86_64.AppImage
+./PixelSmith-Image-Studio-1.4.0-x86_64.AppImage
 ```
 
 On first launch the app **installs everything automatically** and shows

@@ -840,6 +840,81 @@ def encode_sdxl_regions(pipe, prompt: str, negative_prompt: str, regions: list[d
     return prompt_embeds, neg_embeds, pooled, neg_pooled, embeds
 
 
+def save_image_file(image, job_id, index, seed, meta) -> dict:
+    """Save an image as PNG (with A1111 metadata) + WebP thumbnail.
+
+    Shared by the generation pipelines and the ESRGAN upscaler.  `meta` uses
+    the generation-parameter keys; anything missing falls back to a neutral
+    value so an upscale job can reuse the source parameters.  `meta["extra"]`
+    is appended to the metadata line (e.g. the upscale source/scale).
+    """
+    from PIL import PngImagePlugin
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"{stamp}_{str(job_id)[:8]}_{index}.png"
+    path = IMAGES / name
+
+    lora_line = ", ".join(
+        f"{x.get('name') or x.get('id') or '?'}:{x.get('weight', 1)}"
+        for x in meta.get("loras") or []
+    )
+    details = (
+        f"Steps: {meta.get('steps', 0)}, Sampler: {meta.get('sampler', '')}, "
+        f"CFG scale: {meta.get('guidance', 0)}, Seed: {seed}, "
+        f"Size: {meta.get('width', image.width)}x{meta.get('height', image.height)}, "
+        f"Model: {meta.get('model', '')}"
+    )
+    if lora_line:
+        details += f", LoRA: {lora_line}"
+    if meta.get("hires"):
+        hires = meta["hires"]
+        details += f", Hires: {hires['scale']}x, Hires denoise: {hires['strength']}"
+    region_line = " | ".join(
+        f"{r.get('label') or 'region'}: {r['prompt']} ({r['weight']})"
+        for r in meta.get("regions") or []
+    )
+    if region_line:
+        details += f", Regional: {region_line}"
+    if meta.get("extra"):
+        details += f", {meta['extra']}"
+    info = PngImagePlugin.PngInfo()
+    info.add_text(
+        "parameters",
+        "\n".join(
+            [
+                meta.get("prompt", ""),
+                f"Negative prompt: {meta.get('negative_prompt', '')}",
+                details,
+            ]
+        ),
+    )
+    info.add_text("prompt", meta.get("prompt", ""))
+    info.add_text("seed", str(seed))
+    info.add_text("model", meta.get("model", ""))
+    if lora_line:
+        info.add_text("lora", lora_line)
+    image.save(path, "PNG", pnginfo=info)
+
+    thumb_name = name[:-4] + ".webp"
+    try:
+        thumb = image.copy()
+        thumb.thumbnail((640, 640))
+        thumb.save(THUMBS / thumb_name, "WEBP", quality=86, method=3)
+    except Exception as exc:  # noqa: BLE001
+        print("thumbnail failed:", exc, flush=True)
+        thumb_name = None
+
+    return {
+        "file": name,
+        "url": f"/files/images/{name}",
+        "thumb": f"/files/thumbs/{thumb_name}" if thumb_name else f"/files/images/{name}",
+        "width": image.width,
+        "height": image.height,
+        "seed": seed,
+        "elapsed": meta.get("elapsed"),
+    }
+
+
 class ModelManager:
     """Loads SANA lazily, keeps one image pipeline in memory, serialises jobs."""
 
@@ -1752,64 +1827,4 @@ class ModelManager:
         return pipe.image_processor.postprocess(image_out, output_type="pil")[0]
 
     def _save_image(self, image, job_id, index, seed, meta):
-        from PIL import PngImagePlugin
-
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        name = f"{stamp}_{str(job_id)[:8]}_{index}.png"
-        path = IMAGES / name
-
-        lora_line = ", ".join(
-            f"{x['name']}:{x['weight']}" for x in meta.get("loras") or []
-        )
-        details = (
-            f"Steps: {meta['steps']}, Sampler: {meta['sampler']}, "
-            f"CFG scale: {meta['guidance']}, Seed: {seed}, "
-            f"Size: {meta['width']}x{meta['height']}, Model: {meta['model']}"
-        )
-        if lora_line:
-            details += f", LoRA: {lora_line}"
-        if meta.get("hires"):
-            hires = meta["hires"]
-            details += f", Hires: {hires['scale']}x, Hires denoise: {hires['strength']}"
-        region_line = " | ".join(
-            f"{r.get('label') or 'region'}: {r['prompt']} ({r['weight']})"
-            for r in meta.get("regions") or []
-        )
-        if region_line:
-            details += f", Regional: {region_line}"
-        info = PngImagePlugin.PngInfo()
-        info.add_text(
-            "parameters",
-            "\n".join(
-                [
-                    meta["prompt"],
-                    f"Negative prompt: {meta['negative_prompt']}",
-                    details,
-                ]
-            ),
-        )
-        info.add_text("prompt", meta["prompt"])
-        info.add_text("seed", str(seed))
-        info.add_text("model", meta["model"])
-        if lora_line:
-            info.add_text("lora", lora_line)
-        image.save(path, "PNG", pnginfo=info)
-
-        thumb_name = name[:-4] + ".webp"
-        try:
-            thumb = image.copy()
-            thumb.thumbnail((640, 640))
-            thumb.save(THUMBS / thumb_name, "WEBP", quality=86, method=3)
-        except Exception as exc:  # noqa: BLE001
-            print("thumbnail failed:", exc, flush=True)
-            thumb_name = None
-
-        return {
-            "file": name,
-            "url": f"/files/images/{name}",
-            "thumb": f"/files/thumbs/{thumb_name}" if thumb_name else f"/files/images/{name}",
-            "width": image.width,
-            "height": image.height,
-            "seed": seed,
-            "elapsed": meta["elapsed"],
-        }
+        return save_image_file(image, job_id, index, seed, meta)

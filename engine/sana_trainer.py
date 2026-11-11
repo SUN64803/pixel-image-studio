@@ -105,7 +105,14 @@ _CLOCKS_ACTIVE = {"value": False}
 
 
 def gpu_supported_clocks() -> tuple[int, list[int]] | None:
-    """(memory MHz, [supported graphics MHz…]) from nvidia-smi, cached."""
+    """(memory MHz, [supported graphics MHz…]) from nvidia-smi, cached.
+
+    The output lists one block per memory clock (e.g. 5505 MHz with the high
+    core clocks, 405 MHz with the low ones).  Application clocks must use the
+    top memory clock, so pick the block with the highest memory value and only
+    its graphics clocks — pairing 5505 with a 405 MHz-era core clock is not a
+    supported combination.
+    """
     if "value" in _SUPPORTED_CLOCKS:
         return _SUPPORTED_CLOCKS["value"]  # type: ignore[return-value]
     value = None
@@ -116,18 +123,19 @@ def gpu_supported_clocks() -> tuple[int, list[int]] | None:
             timeout=5,
             text=True,
         )
-        mem = None
-        graphics: list[int] = []
+        groups: list[tuple[int, list[int]]] = []
         for line in out.splitlines():
             match = re.search(r":\s*(\d+)\s*MHz", line)
             if not match:
                 continue
             if "Memory" in line:
-                mem = int(match.group(1))
-            elif "Graphics" in line:
-                graphics.append(int(match.group(1)))
-        if mem and graphics:
-            value = (mem, sorted(graphics))
+                groups.append((int(match.group(1)), []))
+            elif "Graphics" in line and groups:
+                groups[-1][1].append(int(match.group(1)))
+        if groups:
+            mem, graphics = max(groups, key=lambda g: g[0])
+            if graphics:
+                value = (mem, sorted(set(graphics)))
     except Exception:  # noqa: BLE001
         value = None
     _SUPPORTED_CLOCKS["value"] = value
@@ -154,7 +162,11 @@ def _clock_set(fraction: float) -> bool:
             text=True,
             timeout=8,
         )
-        ok = res.returncode == 0
+        # nvidia-smi exits 0 even on cards that cannot lock application clocks
+        # (e.g. the P102-100) — it only prints "not supported" and moves on.
+        # Treat that as a failure so the governor falls back to duty-cycling.
+        text = f"{res.stdout or ''}{res.stderr or ''}".lower()
+        ok = res.returncode == 0 and "not supported" not in text
         if ok:
             _CLOCKS_ACTIVE["value"] = True
         return ok
@@ -199,7 +211,7 @@ def _set_throttle_level(cfg: dict, state: dict, level: int) -> None:
             state["clocks"] = ok
             if not ok:
                 print(
-                    "[train] ปรับ clock ไม่ได้ (ต้องมีสิทธิ์ sudo) — "
+                    "[train] ปรับ clock ไม่ได้ (ไม่มี sudo หรือการ์ดไม่รองรับ) — "
                     "ใช้การหน่วงระหว่าง step แทน",
                     flush=True,
                 )

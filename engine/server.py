@@ -40,6 +40,7 @@ import prompt_presets as ppres
 import assistant as ast
 import assistant_llm as astllm
 import assistant_vision as astvis
+import upscaler as upr
 
 ROOT = se.ROOT
 DATA = se.DATA
@@ -48,7 +49,7 @@ THUMBS = se.THUMBS
 HISTORY_FILE = DATA / "history.json"
 HOST = os.environ.get("IMGS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("IMGS_PORT", "47824"))
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 MAX_ACTIVE_JOBS = 8
 # Per-image upload cap for train datasets (photos are ~1–5 MB).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -198,6 +199,89 @@ def history_record(job: dict) -> dict:
     }
 
 
+def run_upscale_job(params: dict, job: dict, cancel: threading.Event) -> dict:
+    """Upscale one existing image with Real-ESRGAN (runs on the job worker).
+
+    The source image's generation parameters are copied into the new history
+    record so the lightbox still shows the original prompt/settings, with an
+    extra note pointing at the source file.
+    """
+    name = str(params.get("file") or "")
+    src_path = IMAGES / name
+    if not src_path.is_file():
+        raise RuntimeError("ไม่พบภาพต้นฉบับ")
+    # The worker is serial, so the generation pipeline is idle here.  Free it
+    # before loading ESRGAN — this machine has 10 GB VRAM / no swap and must
+    # never hold two pipelines at once.
+    try:
+        manager.unload()
+    except Exception:  # noqa: BLE001
+        pass
+    started = time.perf_counter()
+    image = se._load_pil_image(str(src_path))
+    scale = 2 if int(params.get("scale") or 4) == 2 else 4
+    tile = upr.pick_tile(*image.size, scale=scale, requested=params.get("tile"))
+
+    with STATE_LOCK:
+        job["phase"] = "downloading" if not upr.weights_ready() else "upscaling"
+        job["message"] = (
+            "กำลังดาวน์โหลดโมเดล upscale (~64 MB)…"
+            if not upr.weights_ready()
+            else "กำลังโหลดโมเดล upscale…"
+        )
+        job["progress"] = 0.02
+        job["steps"] = 1
+        job["step"] = 0
+
+    def on_progress(done: int, total: int) -> None:
+        with STATE_LOCK:
+            job["phase"] = "upscaling"
+            job["progress"] = round(0.05 + 0.9 * done / max(1, total), 3)
+            job["step"] = done
+            job["steps"] = total
+            job["message"] = f"กำลังขยาย {done}/{total}"
+
+    canceled = False
+    try:
+        result = upr.UPSCALER.upscale(
+            image, scale=scale, tile=tile, on_progress=on_progress, cancel=cancel
+        )
+    except upr.UpscaleCancelled:
+        # Do not chain the exception: its traceback would keep the tile
+        # buffers (up to ~800 MB at 8192 px) alive while unload() runs, so
+        # empty_cache() could not return them to the driver.
+        canceled = True
+    finally:
+        # Release the tile buffers back to the driver; the next job reloads
+        # the 64 MB model in under a second.
+        upr.UPSCALER.unload()
+    if canceled:
+        raise se.Cancelled()
+
+    meta = dict(params)
+    meta.update(
+        width=result.width,
+        height=result.height,
+        model=upr.MODEL_LABEL,
+        hires=None,
+        elapsed=round(time.perf_counter() - started, 1),
+        extra=f"Upscale: {scale}x {upr.MODEL_LABEL} from {name}",
+    )
+    seed = meta.get("seed")
+    entry = se.save_image_file(
+        result, job["id"], 0, -1 if seed is None else seed, meta
+    )
+    with STATE_LOCK:
+        job["images"] = [entry]
+        job["progress"] = 1.0
+    return {
+        "file": entry["file"],
+        "scale": scale,
+        "width": result.width,
+        "height": result.height,
+    }
+
+
 def worker_loop() -> None:
     global ACTIVE_JOB
     while True:
@@ -227,6 +311,10 @@ def worker_loop() -> None:
                         result = sdxl_trainer.train(params, job, cancel)
                     else:
                         result = trainer.train(params, job, cancel)
+                    with STATE_LOCK:
+                        job["result"] = result
+                elif params.get("job_type") == "upscale":
+                    result = run_upscale_job(params, job, cancel)
                     with STATE_LOCK:
                         job["result"] = result
                 else:
@@ -314,6 +402,13 @@ class GenerateRequest(BaseModel):
     mask_image: Optional[str] = None
     strength: float = Field(default=0.75, ge=0.0, le=1.0)
     hires: HiresSpec = Field(default_factory=HiresSpec)
+
+
+class UpscaleRequest(BaseModel):
+    file: str = Field(..., max_length=255)
+    scale: int = 4
+    # None = pick the tile size from the output size (see upscaler.pick_tile).
+    tile: int | None = None
 
 
 class SelectRequest(BaseModel):
@@ -524,6 +619,76 @@ def api_model_unload():
         raise HTTPException(409, "มีงานกำลังสร้างภาพอยู่ — ยกเลิกก่อนแล้วค่อยคืนหน่วยความจำ")
     manager.unload()
     return {"ok": True, "model": manager.snapshot()}
+
+
+@app.get("/api/upscale")
+def api_upscale_info():
+    """Availability of the Real-ESRGAN model (downloaded on first use)."""
+    return {"ok": True, **upr.UPSCALER.info()}
+
+
+@app.post("/api/upscale")
+def api_upscale(req: UpscaleRequest):
+    name = Path(req.file or "").name
+    if name != req.file or not (IMAGES / name).is_file():
+        raise HTTPException(404, "ไม่พบภาพต้นฉบับ")
+    with STATE_LOCK:
+        active = sum(1 for j in JOBS.values() if j.get("status") in ("queued", "running"))
+    if active >= MAX_ACTIVE_JOBS:
+        raise HTTPException(
+            429, f"คิวเต็ม (สูงสุด {MAX_ACTIVE_JOBS} งาน) — รองานเดิมเสร็จก่อน"
+        )
+    _assist_free_vram()
+    scale = 2 if int(req.scale) == 2 else 4
+    # Copy the source record's parameters so the new history entry keeps the
+    # original prompt/settings in the lightbox.
+    with STATE_LOCK:
+        source = next(
+            (
+                r
+                for r in HISTORY
+                if any(i.get("file") == name for i in r.get("images", []))
+            ),
+            None,
+        )
+    params = dict((source or {}).get("params") or {})
+    params.pop("tile", None)
+    params.update(
+        job_type="upscale",
+        file=name,
+        scale=scale,
+        upscale={"from": name, "scale": scale, "model": upr.MODEL_LABEL},
+    )
+    if req.tile:
+        params["tile"] = max(128, min(1024, int(req.tile)))
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "phase": "queued",
+        "message": "อยู่ในคิว",
+        "progress": 0.0,
+        "step": 0,
+        "steps": 1,
+        "image_index": 0,
+        "batch": 1,
+        "images": [],
+        "params": params,
+        "model_id": upr.MODEL_ID,
+        "model_label": upr.MODEL_LABEL,
+        "family": "upscale",
+        "loras": [],
+        "created": now_iso(),
+        "started": None,
+        "completed": None,
+        "elapsed": None,
+        "error": None,
+        "_cancel": threading.Event(),
+    }
+    with STATE_LOCK:
+        JOBS[job_id] = job
+    WORK_Q.put(job_id)
+    return {"ok": True, "job_id": job_id, "job": public_job(job)}
 
 
 @app.post("/api/generate")

@@ -194,6 +194,20 @@
     "ถัดไป": "Next",
     "รายละเอียดภาพ": "Image details",
     "✦ ใช้การตั้งค่านี้": "✦ Reuse settings",
+    "ขยาย 4× (ESRGAN)": "Upscale 4× (ESRGAN)",
+    "ขยายด้วย Real-ESRGAN (คุณภาพสูงกว่า LANCZOS)":
+      "Upscale with Real-ESRGAN (better than LANCZOS)",
+    "ภาพใหญ่เกินไปสำหรับขยาย 4× (สูงสุด 8192px)":
+      "Image too large for 4× upscale (max 8192px)",
+    "กำลังขยาย…": "Upscaling…",
+    "กำลังขยายภาพด้วย ESRGAN…": "Upscaling with ESRGAN…",
+    "ขยายภาพเสร็จแล้ว": "Upscale complete",
+    "ขยายภาพไม่สำเร็จ": "Upscale failed",
+    "ยกเลิกการขยายแล้ว": "Upscale canceled",
+    "กำลังดาวน์โหลดโมเดล upscale (~64 MB)…":
+      "Downloading the upscale model (~64 MB)…",
+    "กำลังโหลดโมเดล upscale…": "Loading the upscale model…",
+    "ไม่พบภาพต้นฉบับ": "Source image not found",
     "ดาวน์โหลด": "Download",
     "ลบ": "Delete",
     "(ไม่มีพรอมป์ต)": "(no prompt)",
@@ -615,6 +629,9 @@
 
   // ── dynamic messages: regex on the normalized Thai text ───────────────────
   const PATTERNS = [
+    [/^กำลังขยาย (\d+)\/(\d+)$/, (m) => `Upscaling ${m[1]}/${m[2]}`],
+    [/^ภาพใหญ่เกินไป: (\d+)×(\d+) ×4 = (\d+)×(\d+) \(สูงสุด (\d+)px ต่อด้าน\)$/,
+      (m) => `Image too large: ${m[1]}×${m[2]} ×4 = ${m[3]}×${m[4]} (max ${m[5]}px per side)`],
     [/^(\d+) ตัวอักษร$/, (m) => `${m[1]} chars`],
     [/^โซน (\d+)$/, (m) => `Zone ${m[1]}`],
     [/^(\d+×\d+) · (\d+) steps · CFG ([\d.]+) · seed (สุ่ม|\d+)$/,
