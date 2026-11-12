@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# pixelsmith-power-setup — one-time root setup for the in-app power modes.
+#
+# Normally launched by the app through pkexec:
+#   pkexec /bin/bash /path/to/pixelsmith-power-setup <desktop-user>
+#
+# It installs:
+#   /usr/local/bin/pixelsmith-power   (root helper: set / apply / reset / status)
+#   /etc/sudoers.d/pixelsmith-power   (NOPASSWD for those commands)
+# and removes the older timer/service units.  The app now owns the limit while
+# it is running: it applies the saved mode on launch, keeps it applied, and
+# restores the card default on exit.  No systemd timer is installed.
+#
+# Safe to re-run: the saved wattage in /var/lib/pixelsmith/power is preserved.
+set -uo pipefail
+
+say() { printf '  %s\n' "$*"; }
+fail() { printf 'pixelsmith-power-setup: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || fail "must run as root (use pkexec or sudo)"
+
+USER_NAME="${1:-${SUDO_USER:-}}"
+[ -n "$USER_NAME" ] || USER_NAME=$(id -un)
+[ "$USER_NAME" = "root" ] && fail "refusing to grant passwordless power control to root"
+case "$USER_NAME" in
+  ''|*[!a-zA-Z0-9._-]*) fail "invalid user name: $USER_NAME" ;;
+esac
+id "$USER_NAME" >/dev/null 2>&1 || fail "unknown user: $USER_NAME"
+
+HERE=$(cd -- "$(dirname -- "$0")" && pwd) || fail "cannot locate installer directory"
+HELPER_SRC="$HERE/pixelsmith-power"
+[ -f "$HELPER_SRC" ] || fail "missing file: $HELPER_SRC"
+
+HELPER=/usr/local/bin/pixelsmith-power
+OLD_HELPER=/usr/local/bin/nvidia-power-limit
+SUDOERS=/etc/sudoers.d/pixelsmith-power
+UNIT_DIR=/etc/systemd/system
+STATE_DIR=/var/lib/pixelsmith
+SMI=/usr/bin/nvidia-smi
+
+VISUDO=$(command -v visudo || true)
+[ -n "$VISUDO" ] || fail "visudo not found (install sudo)"
+
+say "installing $HELPER"
+install -d -m 755 /usr/local/bin || fail "cannot create /usr/local/bin"
+install -m 755 "$HELPER_SRC" "$HELPER" || fail "cannot install helper"
+
+say "granting passwordless control to user '$USER_NAME'"
+tmp_sudoers=$(mktemp /etc/sudoers.d/.pixelsmith-power.XXXXXX) || fail "cannot create sudoers temp file"
+cat > "$tmp_sudoers" <<EOF
+# PixelSmith Image Studio — in-app GPU power modes.
+# Installed by pixelsmith-power-setup.  Remove this file to revoke access.
+$USER_NAME ALL=(root) NOPASSWD: $HELPER set *, $HELPER apply, $HELPER reset, $HELPER status
+EOF
+chmod 440 "$tmp_sudoers"
+if ! "$VISUDO" -cf "$tmp_sudoers" >/dev/null 2>&1; then
+  rm -f "$tmp_sudoers"
+  fail "sudoers validation failed"
+fi
+mv -f "$tmp_sudoers" "$SUDOERS" || fail "cannot install sudoers rule"
+
+# ── remove the old terminal-era helper ─────────────────────────────────────
+# It only set a fixed wattage from a systemd unit and is no longer used.
+if [ -e "$OLD_HELPER" ]; then
+  say "removing old helper $OLD_HELPER"
+  rm -f "$OLD_HELPER"
+fi
+
+# ── remove old timer/service units ─────────────────────────────────────────
+# The app owns the power limit now, so nothing may re-apply it behind the
+# app's back (the old timer was the source of the 200 W → 150 W regression).
+removed=0
+for unit in pixelsmith-power.timer pixelsmith-power.service \
+            nvidia-power-limit.timer nvidia-power-limit.service; do
+  if [ -e "$UNIT_DIR/$unit" ]; then
+    say "removing old unit $unit"
+    systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$unit"
+    removed=1
+  fi
+done
+if [ "$removed" -eq 1 ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl reset-failed pixelsmith-power.service pixelsmith-power.timer \
+    nvidia-power-limit.service nvidia-power-limit.timer >/dev/null 2>&1 || true
+fi
+
+# Keep the state directory readable; never seed or overwrite the saved mode.
+install -d -m 755 "$STATE_DIR" || fail "cannot create $STATE_DIR"
+[ -e "$STATE_DIR/power" ] && chmod 644 "$STATE_DIR/power" || true
+
+limit=$("$SMI" --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null | head -1)
+printf '\nDone. Power control is ready%s.\n' "${limit:+ (current limit ${limit} W)}"
+say "the app applies the saved mode on launch and restores the card default on exit"
+say "change modes any time from Settings → GPU power mode"
+if [ -r "$STATE_DIR/power" ]; then
+  say "saved mode: $(head -1 "$STATE_DIR/power" 2>/dev/null | tr -d '[:space:]') W ($STATE_DIR/power)"
+else
+  say "no saved mode yet — the app starts at the card default"
+fi

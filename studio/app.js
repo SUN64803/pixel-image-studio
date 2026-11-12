@@ -6,7 +6,7 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   // translate a composed UI string (confirm() dialogs etc.) — the dictionary
   // lives in i18n.js; Thai source text falls through unchanged
-  const tr = (s) => (window.I18N ? I18N.tr(s) : s);
+  const tr = (s) => (window.I18N && I18N.tr(s)) || s;
 
   const DEFAULTS = {
     prompt: "",
@@ -95,6 +95,7 @@
     liveJob: null,
     lb: null,
     model: null,
+    power: null,
     registry: [],
     currentId: null,
     currentModel: null,
@@ -180,6 +181,149 @@
       el.classList.add("out");
       setTimeout(() => el.remove(), 240);
     }, ms);
+  }
+
+  // ── in-app confirm dialog ───────────────────────────────────────────────
+  // Never use the native confirm()/alert(): in Electron the text caret and
+  // keyboard focus can break after the native dialog closes, and only a full
+  // app restart brings them back. This async dialog keeps focus in the page.
+  const confirmState = { resolve: null, opener: null };
+
+  function uiConfirm(message, options = {}) {
+    return new Promise((resolve) => {
+      const modal = $("#confirmModal");
+      if (!modal) {
+        // last-resort fallback (should not happen)
+        resolve(false);
+        return;
+      }
+      // A second confirm while one is open cancels the first one.
+      if (confirmState.resolve) {
+        const prev = confirmState.resolve;
+        confirmState.resolve = null;
+        prev(false);
+      }
+      confirmState.resolve = resolve;
+      confirmState.opener =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+      const title = $("#confirmTitle");
+      if (title) title.textContent = tr(options.title || "ยืนยันการทำรายการ");
+      const text = $("#confirmText");
+      if (text) text.textContent = String(message == null ? "" : message);
+      const ok = $("#confirmOk");
+      if (ok) {
+        ok.textContent = tr(options.confirmLabel || "ยืนยัน");
+        ok.classList.toggle("danger", options.danger !== false);
+      }
+      const cancel = $("#confirmCancel");
+      if (cancel) cancel.textContent = tr(options.cancelLabel || "ยกเลิก");
+
+      modal.classList.remove("hidden");
+      // Safe default: focus Cancel, so Enter never deletes by accident.
+      setTimeout(() => cancel && cancel.focus(), 0);
+    });
+  }
+
+  function closeConfirm(result) {
+    const modal = $("#confirmModal");
+    if (!modal || modal.classList.contains("hidden")) return;
+    modal.classList.add("hidden");
+    const resolve = confirmState.resolve;
+    const opener = confirmState.opener;
+    confirmState.resolve = null;
+    confirmState.opener = null;
+    if (resolve) resolve(!!result);
+    // Put the caret back where the user left it.
+    if (opener && document.body.contains(opener) && typeof opener.focus === "function") {
+      try {
+        opener.focus({ preventScroll: true });
+      } catch (e) {
+        try {
+          opener.focus();
+        } catch (e2) {
+          /* element gone */
+        }
+      }
+    }
+  }
+
+  function bindConfirmDialog() {
+    const modal = $("#confirmModal");
+    if (!modal) return;
+    $("#confirmOk")?.addEventListener("click", () => closeConfirm(true));
+    $("#confirmCancel")?.addEventListener("click", () => closeConfirm(false));
+    modal.addEventListener("click", (event) => {
+      if (event.target.closest("[data-confirm-cancel]")) closeConfirm(false);
+    });
+    // Keep the dialog's keys away from the app-level shortcuts (Ctrl+Enter,
+    // Escape closing the assistant/lightbox, …) and close on Escape.
+    modal.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeConfirm(false);
+      }
+    });
+    // Simple focus trap: Tab cycles between the two buttons.
+    modal.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusables = [$("#confirmCancel"), $("#confirmOk")].filter(Boolean);
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  // ── blocking status for slow operations ─────────────────────────────────
+  const BUSY_TEXT = "กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น";
+  let busyDepth = 0;
+
+  function showBlocking(message) {
+    const overlay = $("#busyOverlay");
+    if (!overlay) return;
+    busyDepth += 1;
+    const text = $("#busyText");
+    if (text) text.textContent = tr(message || BUSY_TEXT);
+    overlay.classList.remove("hidden");
+  }
+
+  function hideBlocking() {
+    busyDepth = Math.max(0, busyDepth - 1);
+    if (busyDepth > 0) return;
+    const overlay = $("#busyOverlay");
+    if (overlay) overlay.classList.add("hidden");
+  }
+
+  // File.path was removed in Electron 32 — resolve native paths through the
+  // preload bridge instead (falls back to File.path for browsers/old builds).
+  function filePath(file) {
+    if (!file) return "";
+    // The studio normally runs in a same-origin iframe inside the host shell;
+    // the preload bridge lives on the top window, so fall back to parent.
+    let bridge = window.pixelApp || null;
+    if (!bridge) {
+      try {
+        if (window.parent && window.parent !== window) bridge = window.parent.pixelApp || null;
+      } catch (e) {
+        /* cross-origin parent */
+      }
+    }
+    try {
+      if (bridge && typeof bridge.getPathForFile === "function") {
+        return bridge.getPathForFile(file) || "";
+      }
+    } catch (e) {
+      /* not a native file */
+    }
+    return typeof file.path === "string" ? file.path : "";
   }
 
   // ── settings persistence ────────────────────────────────────────────────
@@ -313,10 +457,10 @@
       region_layout: ($("#regionLayout") && $("#regionLayout").value) || "2",
       regions: readRegionRows(),
       inpaint: inpaintCapable()
-        && !!($("#initImage")?.files?.[0]?.path)
-        && !!($("#maskImage")?.files?.[0]?.path),
-      init_image: $("#initImage")?.files?.[0]?.path || "",
-      mask_image: $("#maskImage")?.files?.[0]?.path || "",
+        && !!filePath($("#initImage")?.files?.[0])
+        && !!filePath($("#maskImage")?.files?.[0]),
+      init_image: filePath($("#initImage")?.files?.[0]),
+      mask_image: filePath($("#maskImage")?.files?.[0]),
       strength: clamp(Number($("#inpaintStrength")?.value) || 0.75, 0, 1),
       hires_enabled: !!($("#hiresEnabled")?.checked),
       hires_scale: clamp(Number($("#hiresScale")?.value) || 1.5, 1, 2),
@@ -689,7 +833,7 @@
       btn.addEventListener("click", async () => {
         const p = presetState.items.find((x) => x.id === btn.dataset.id);
         if (!p) return;
-        if (!confirm(tr(`ลบพรีเซ็ต "${p.name}"?`))) return;
+        if (!(await uiConfirm(tr(`ลบพรีเซ็ต "${p.name}"?`)))) return;
         try {
           await api(`/api/presets/${p.id}`, { method: "DELETE" });
           await refreshPresets();
@@ -1089,7 +1233,7 @@
     $$("#loraManagerList .lora-item button[data-id]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const id = btn.dataset.id;
-        if (!confirm(tr(`ลบ LoRA "${btn.closest('.lora-item').querySelector('.lora-name').textContent}" ใช่หรือไม่?`))) return;
+        if (!(await uiConfirm(tr(`ลบ LoRA "${btn.closest('.lora-item').querySelector('.lora-name').textContent}" ใช่หรือไม่?`)))) return;
         try {
           await api("/api/loras/delete", { method: "POST", body: JSON.stringify({ id }) });
           await refreshLoras();
@@ -1120,6 +1264,119 @@
     });
   }
 
+  // ── GPU power modes ─────────────────────────────────────────────────────
+  function powerLabel(modeId) {
+    return { low: "Low temp", balanced: "Balanced", performance: "Performance" }[
+      modeId
+    ] || modeId;
+  }
+
+  function renderPower(p) {
+    state.power = p || null;
+    const modes = p && Array.isArray(p.modes) ? p.modes : [];
+    const byId = Object.fromEntries(modes.map((m) => [m.id, m]));
+    $$("#powerModes .power-mode").forEach((btn) => {
+      const m = byId[btn.dataset.mode];
+      const watts = btn.querySelector(".power-watts");
+      if (watts) watts.textContent = m ? `${m.watts} W` : "—";
+      btn.disabled =
+        !p || !p.available || p.supported === false || !!p.setup_required;
+      // Highlight the mode the app has saved, not just what the card is doing
+      // right now: the watchdog may still be re-applying it after a reset.
+      const chosen = p && (p.saved_mode || p.mode);
+      btn.classList.toggle("active", !!chosen && chosen === btn.dataset.mode);
+    });
+    const stateEl = $("#powerState");
+    if (stateEl) {
+      if (!p || !p.available) {
+        stateEl.textContent = "ไม่พบการ์ด NVIDIA";
+      } else if (p.supported === false) {
+        stateEl.textContent = "ใช้ได้เฉพาะ Linux";
+      } else {
+        const bits = [`${Math.round(p.limit)} W`];
+        if (Number.isFinite(p.temp)) bits.push(`${Math.round(p.temp)}°C`);
+        if (Number.isFinite(p.draw)) bits.push(`${p.draw.toFixed(1)} W`);
+        stateEl.textContent = bits.join(" · ");
+      }
+    }
+    const hint = $("#powerHint");
+    if (hint) {
+      if (!p || !p.available) {
+        hint.textContent = "โหมดพลังงานใช้ได้เฉพาะเครื่องที่มีการ์ด NVIDIA";
+      } else if (p.supported === false) {
+        hint.textContent = "โหมดพลังงานใช้ได้เฉพาะ Linux ที่มีการ์ด NVIDIA";
+      } else if (p.setup_required) {
+        hint.textContent =
+          "เปิดใช้งานครั้งเดียว (ต้องใส่รหัสผ่านระบบ) — หลังจากนั้นสลับโหมดได้ทันทีโดยไม่ต้องใส่รหัส";
+      } else {
+        hint.textContent =
+          "ใช้โหมดที่เลือกตลอดเวลาแอปเปิด — เมื่อปิดแอปจะกลับไปใช้ค่าเริ่มต้นของการ์ด";
+      }
+    }
+    const setupBtn = $("#powerSetup");
+    if (setupBtn) {
+      setupBtn.classList.toggle(
+        "hidden",
+        !p || p.supported === false || !p.setup_required
+      );
+    }
+  }
+
+  async function refreshPower() {
+    try {
+      renderPower(await api("/api/power"));
+    } catch (err) {
+      renderPower({ available: false });
+    }
+  }
+
+  async function setPowerMode(mode) {
+    const btn = document.querySelector(
+      `#powerModes .power-mode[data-mode="${mode}"]`
+    );
+    if (btn) btn.disabled = true;
+    showBlocking();
+    try {
+      const p = await api("/api/power", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      });
+      renderPower(p);
+      const m = (p.modes || []).find((x) => x.id === mode);
+      toast(
+        `เปลี่ยนโหมดพลังงานเป็น ${powerLabel(mode)}${m ? ` (${m.watts} W)` : ""} แล้ว`,
+        "ok"
+      );
+    } catch (err) {
+      toast(err.message, "err");
+      await refreshPower();
+    } finally {
+      hideBlocking();
+    }
+  }
+
+  async function setupPower() {
+    const btn = $("#powerSetup");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "กำลังเปิดใช้งาน…";
+    }
+    showBlocking("กำลังเปิดใช้งานโหมดพลังงาน กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
+    try {
+      const p = await api("/api/power/setup", { method: "POST" });
+      renderPower(p);
+      toast("เปิดใช้งานโหมดพลังงานแล้ว", "ok");
+    } catch (err) {
+      toast(err.message, "err", 6000);
+    } finally {
+      hideBlocking();
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "เปิดใช้งานโหมดพลังงาน";
+      }
+    }
+  }
+
   // ── model status ────────────────────────────────────────────────────────
   function updateModelBadge(model) {
     const badge = $("#modelBadge");
@@ -1140,6 +1397,11 @@
   }
 
   async function refreshHealth() {
+    state.healthTicks = (state.healthTicks || 0) + 1;
+    if (state.healthTicks % 8 === 0) {
+      const pane = document.querySelector('#panel .pane[data-pane="settings"]');
+      if (pane && pane.classList.contains("active")) refreshPower();
+    }
     try {
       const h = await api("/api/health");
       state.model = h.model;
@@ -1564,7 +1826,7 @@
       toast("ภาพนี้ยังไม่ถูกบันทึกในประวัติ", "warn");
       return;
     }
-    if (!confirm(tr("ลบภาพชุดนี้และไฟล์ทั้งหมดออกจากเครื่อง?"))) return;
+    if (!(await uiConfirm(tr("ลบภาพชุดนี้และไฟล์ทั้งหมดออกจากเครื่อง?")))) return;
     try {
       await api(`/api/history/${encodeURIComponent(rec.id)}`, { method: "DELETE" });
       state.history = state.history.filter((r) => r.id !== rec.id);
@@ -1579,13 +1841,14 @@
 
   async function clearHistory() {
     if (
-      !confirm(
+      !(await uiConfirm(
         tr(
           "ล้างประวัติทั้งหมดและลบไฟล์ภาพทุกไฟล์ในโฟลเดอร์ data/images ?\nการกระทำนี้ย้อนกลับไม่ได้"
         )
-      )
+      ))
     )
       return;
+    showBlocking("กำลังล้างประวัติ กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
     try {
       await api("/api/history/clear", {
         method: "POST",
@@ -1598,6 +1861,8 @@
       toast("ล้างประวัติแล้ว", "ok");
     } catch (err) {
       toast(err.message, "err");
+    } finally {
+      hideBlocking();
     }
   }
 
@@ -1911,6 +2176,7 @@
   async function assistantChooseModel(name) {
     const sel = $("#assistantModelSelect");
     if (sel) sel.disabled = true;
+    showBlocking("กำลังเปลี่ยนโมเดลผู้ช่วย กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
     try {
       const data = await api("/api/assistant/model", {
         method: "POST",
@@ -1927,6 +2193,8 @@
     } catch (err) {
       toast(`เปลี่ยนโมเดลไม่ได้: ${err.message}`, "err", 5000);
       await loadAssistantModels();
+    } finally {
+      hideBlocking();
     }
   }
 
@@ -2430,8 +2698,39 @@
 
   // ── wiring ──────────────────────────────────────────────────────────────
   function wire() {
+    bindConfirmDialog();
+    // Safety net for Chromium's occasional lost caret after a native window
+    // dialog (file picker, message box): rebuild the caret on the focused
+    // editable element when the window regains focus.
+    window.addEventListener("focus", () => {
+      const el = document.activeElement;
+      if (!el) return;
+      const tag = el.tagName;
+      if (tag !== "TEXTAREA" && tag !== "INPUT") return;
+      if (el.type === "checkbox" || el.type === "radio" || el.type === "file") return;
+      let start = null;
+      let end = null;
+      try {
+        start = el.selectionStart;
+        end = el.selectionEnd;
+      } catch (e) {
+        /* number/email inputs do not expose a selection */
+      }
+      try {
+        el.blur();
+        el.focus({ preventScroll: true });
+        if (typeof start === "number" && typeof end === "number") {
+          el.setSelectionRange(start, end);
+        }
+      } catch (e) {
+        /* element does not support selection */
+      }
+    });
     $$("#panelTabs .panel-tab").forEach((btn) => {
-      btn.addEventListener("click", () => setPanelTab(btn.dataset.pane));
+      btn.addEventListener("click", () => {
+        setPanelTab(btn.dataset.pane);
+        if (btn.dataset.pane === "settings") refreshPower();
+      });
     });
     let savedTab = "create";
     try {
@@ -2440,6 +2739,13 @@
       /* ข้าม */
     }
     setPanelTab(savedTab, { persist: false });
+
+    $$("#powerModes .power-mode").forEach((btn) => {
+      btn.addEventListener("click", () => setPowerMode(btn.dataset.mode));
+    });
+    if ($("#powerSetup")) {
+      $("#powerSetup").addEventListener("click", setupPower);
+    }
 
     if ($("#assistantToggle")) {
       $("#assistantToggle").addEventListener("click", () =>
@@ -2502,7 +2808,7 @@
         try {
           const res = await api("/api/loras/import", {
             method: "POST",
-            body: JSON.stringify({ path: file.path }),
+            body: JSON.stringify({ path: filePath(file) }),
           });
           await refreshLoras();
           input.value = "";
@@ -2514,6 +2820,15 @@
     }
     if ($("#presetSave")) {
       $("#presetSave").addEventListener("click", saveCurrentPreset);
+    }
+    if ($("#presetName")) {
+      // Enter in the preset name should save the preset — not submit the
+      // generate form (the input lives inside #form).
+      $("#presetName").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.isComposing) return;
+        event.preventDefault();
+        saveCurrentPreset();
+      });
     }
     if ($("#presetImportCollection")) {
       $("#presetImportCollection").addEventListener("click", importPresetsFromCollection);
@@ -2789,7 +3104,7 @@
             .map((p) => `• ${p.add.join(", ")} — ${p.item.file}`)
             .join("\n");
           const more = plan.length > 6 ? `\n…อีก ${plan.length - 6} รูป` : "";
-          if (!confirm(tr(`จะเติม tag มุมให้ ${plan.length} รูป:\n${preview}${more}\n\nยืนยัน?`))) {
+          if (!(await uiConfirm(tr(`จะเติม tag มุมให้ ${plan.length} รูป:\n${preview}${more}\n\nยืนยัน?`), { danger: false }))) {
             return;
           }
           try {
@@ -2813,7 +3128,7 @@
         if (!btn) return;
         const ds = activeDataset();
         if (!ds) return;
-        if (!confirm(tr("ทำเครื่องหมายรูปที่ caption บ่งบอกว่ามีคนที่สองเป็น “หลายตัวละคร”?"))) return;
+        if (!(await uiConfirm(tr("ทำเครื่องหมายรูปที่ caption บ่งบอกว่ามีคนที่สองเป็น “หลายตัวละคร”?"), { danger: false }))) return;
         const updates = collectCaptions().map((item) => ({
           ...item,
           multi: item.multi || looksMultiCaption(item.caption),
@@ -2870,7 +3185,7 @@
       $("#dsDelete").addEventListener("click", async () => {
         const ds = activeDataset();
         if (!ds) return;
-        if (!confirm(tr(`ลบ dataset "${ds.name}" และรูปทั้งหมด?`))) return;
+        if (!(await uiConfirm(tr(`ลบ dataset "${ds.name}" และรูปทั้งหมด?`)))) return;
         try {
           await api(`/api/train/datasets/${ds.id}`, { method: "DELETE" });
           state.activeDs = null;
@@ -3001,6 +3316,14 @@
     document.addEventListener("keydown", (event) => {
       if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
       if (!$("#lightbox").classList.contains("hidden")) return;
+      // Ctrl+Enter inside the assistant drawer is not a generate shortcut.
+      if (
+        assistantIsOpen() &&
+        event.target &&
+        typeof event.target.closest === "function" &&
+        event.target.closest("#assistantDrawer")
+      )
+        return;
       event.preventDefault();
       if (form.requestSubmit) form.requestSubmit();
       else form.dispatchEvent(new Event("submit", { cancelable: true }));
@@ -3107,6 +3430,7 @@
     await refreshPresets();
     await refreshTrainer();
     await refreshHealth();
+    await refreshPower();
     await refreshHistory(true);
     await resumeActive();
     state.healthTimer = setInterval(refreshHealth, 4000);

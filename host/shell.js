@@ -22,6 +22,21 @@
 
   function gb(bytes) { return bytes ? (bytes / 1073741824).toFixed(1) : "0"; }
 
+  const blocking = $("#blocking");
+  let blockingDepth = 0;
+  function showBlocking(message) {
+    if (!blocking) return;
+    blockingDepth += 1;
+    const text = $("#blockingText");
+    if (text && message) text.textContent = message;
+    blocking.classList.remove("hidden");
+  }
+  function hideBlocking() {
+    blockingDepth = Math.max(0, blockingDepth - 1);
+    if (blockingDepth > 0) return;
+    if (blocking) blocking.classList.add("hidden");
+  }
+
   function showBanner(message) {
     if (!message) { banner.classList.remove("show"); return; }
     bannerText.textContent = message;
@@ -67,22 +82,31 @@
   loadBtn.addEventListener("click", async () => {
     loadBtn.disabled = true;
     showBanner("");
+    showBlocking("กำลังโหลดโมเดล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
+    let poll = null;
+    const stopBlocking = () => {
+      if (poll) clearInterval(poll);
+      poll = null;
+      hideBlocking();
+    };
     try {
       const res = await fetch("/api/model/load", { method: "POST" });
       if (!res.ok) throw new Error("HTTP " + res.status);
       modelPill.className = "pill busy";
       modelText.textContent = "กำลังโหลดโมเดล…";
-      const t = setInterval(async () => {
+      poll = setInterval(async () => {
         const h = await refresh();
-        if (!h || !["loading", "preparing"].includes(h.model.state)) clearInterval(t);
+        if (!h || !["loading", "preparing"].includes(h.model.state)) stopBlocking();
       }, 900);
     } catch (err) {
+      stopBlocking();
       showBanner("โหลดโมเดลไม่สำเร็จ: " + (err.message || err));
       loadBtn.disabled = false;
     }
   });
 
   unloadBtn.addEventListener("click", async () => {
+    showBlocking("กำลังคืนหน่วยความจำโมเดล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
     try {
       const res = await fetch("/api/model/unload", { method: "POST" });
       if (!res.ok) {
@@ -94,6 +118,8 @@
       await refresh();
     } catch (err) {
       showBanner(err.message || String(err));
+    } finally {
+      hideBlocking();
     }
   });
 

@@ -28,7 +28,7 @@ COLLECTION = (
     "Settings:Steps: 31, Sampler: DPM++ 2M, CFG scale: 4, Seed: 3432053035, "
     "Size: 1152x768, Model: base-model-xl\n"
     "\n"
-    "### Bunny preset\n"
+    "### Second preset\n"
     "Prompt:score_9, <lora:pony_style:1>\n"
     "Negative:worst quality\n"
 )
@@ -60,7 +60,7 @@ def test_settings_from_a1111_maps_form_fields():
 
 def test_parse_collection_keeps_multiline_and_all_loras():
     entries = pp.parse_collection(COLLECTION)
-    assert [e["name"] for e in entries] == ["Duo preset", "Bunny preset"]
+    assert [e["name"] for e in entries] == ["Duo preset", "Second preset"]
     first = entries[0]
     # multi-line regional prompt must survive intact
     assert "ADDCOMM" in first["prompt"] and "white fur, detailed" in first["prompt"]

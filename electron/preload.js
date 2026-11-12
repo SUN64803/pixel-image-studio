@@ -1,12 +1,21 @@
 // PixelSmith Image Studio — preload (PART A).
 // The renderer stays sandboxed; it reaches Node only through window.pixelApp.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("pixelApp", {
   platform: process.platform,
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
+  },
+  // File.path was removed in Electron 32 — this is the supported way to get
+  // the absolute path of a file chosen through <input type="file">.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch (e) {
+      return "";
+    }
   },
   openFolder: (which) => ipcRenderer.invoke("open-folder", String(which || "root")),
   openProgramFolder: () => ipcRenderer.invoke("open-folder", "root"),

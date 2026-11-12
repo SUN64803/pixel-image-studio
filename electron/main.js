@@ -49,7 +49,9 @@ const ROOT = APP_ROOT; // legacy alias: read-only program root (dialogs/labels)
 let win = null;
 let engineProc = null;
 let engineStarting = false;
+let engineOwned = false;
 let quitting = false;
+let powerResetStarted = false;
 let downloadHookInstalled = false;
 
 // Stable WM class so Linux panels/taskbars use the program's icon + name.
@@ -89,6 +91,39 @@ function ping(timeout = 1200) {
   });
 }
 
+function postJson(pathname, body, timeout = 8000) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(body || {});
+    const req = http.request(
+      {
+        host: HOST,
+        port: PORT,
+        path: pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+        timeout,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            body: data,
+          });
+        });
+      }
+    );
+    req.on("timeout", () => { req.destroy(); resolve({ ok: false, timeout: true }); });
+    req.on("error", (err) => resolve({ ok: false, error: String(err && err.message || err) }));
+    req.end(payload);
+  });
+}
+
 function startEngineProcess() {
   const py = enginePython();
   if (!fs.existsSync(py)) {
@@ -119,6 +154,7 @@ function startEngineProcess() {
       if (!quitting) console.log(`[engine] exited code=${code} signal=${signal}`);
       engineProc = null;
     });
+    engineOwned = true;
     return { ok: true, proc: engineProc };
   } catch (err) {
     return { ok: false, reason: "spawn", error: String(err && err.message || err) };
@@ -163,6 +199,31 @@ function stopEngine() {
     }
   } catch (e) {
     /* already gone */
+  }
+}
+
+// Power mode is owned by the app: on quit, ask the engine to restore the
+// card's default limit (the saved choice stays for the next launch).
+function resetPowerOnQuit() {
+  if (process.platform !== "linux" || !engineOwned) {
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+  return postJson("/api/power/reset", {}, 8000).catch(() => ({ ok: false }));
+}
+
+function spawnPowerResetFallback() {
+  if (process.platform !== "linux" || !engineOwned) return;
+  try {
+    // Fixed command: the helper's sudoers rule allows `reset` without a
+    // password.  Detached so it survives this process exiting.
+    const child = spawn(
+      "sh",
+      ["-c", "sleep 4; exec sudo -n /usr/local/bin/pixelsmith-power reset"],
+      { detached: true, stdio: "ignore" }
+    );
+    child.unref();
+  } catch (e) {
+    /* helper not installed — nothing else to do */
   }
 }
 
@@ -535,6 +596,18 @@ async function restartEngine() {
   }
 }
 
+// Native dialogs can leave Chromium's focus/caret state stale on Linux.
+// Re-focus the window and its web contents once they close.
+function refocusWindow() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.focus();
+    win.webContents.focus();
+  } catch (e) {
+    /* window is going away */
+  }
+}
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1480,
@@ -572,7 +645,10 @@ async function createWindow() {
           buttons: ["เปิดโฟลเดอร์", "ปิด"],
           defaultId: 0,
           cancelId: 1,
-        }).then((r) => { if (r.response === 0) shell.showItemInFolder(target); }).catch(() => {});
+        }).then((r) => {
+          refocusWindow();
+          if (r.response === 0) shell.showItemInFolder(target);
+        }).catch(() => { refocusWindow(); });
       });
     });
   }
@@ -638,7 +714,10 @@ function buildMenu() {
             buttons: ["เปิดโฟลเดอร์โปรแกรม", "ปิด"],
             defaultId: 0,
             cancelId: 1,
-          }).then((r) => { if (r.response === 0) shell.openPath(ROOT); }).catch(() => {}),
+          }).then((r) => {
+            refocusWindow();
+            if (r.response === 0) shell.openPath(ROOT);
+          }).catch(() => { refocusWindow(); }),
         },
         {
           label: "About PixelSmith Image Studio",
@@ -653,7 +732,7 @@ function buildMenu() {
               `Engine: ${BASE_URL}\n` +
               `Program folder: ${ROOT}`,
             buttons: ["OK"],
-          }),
+          }).then(() => refocusWindow()).catch(() => refocusWindow()),
         },
       ],
     },
@@ -706,7 +785,22 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
-  app.on("before-quit", () => { quitting = true; });
+  app.on("before-quit", (event) => {
+    if (powerResetStarted) {
+      quitting = true;
+      return;
+    }
+    powerResetStarted = true;
+    event.preventDefault();
+    quitting = true;
+    resetPowerOnQuit().finally(() => {
+      stopEngine();
+      // The engine may still be releasing the GPU when the request above ran;
+      // retry once through the helper after it has had a moment to exit.
+      spawnPowerResetFallback();
+      setTimeout(() => app.quit(), 150);
+    });
+  });
   app.on("will-quit", () => stopEngine());
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

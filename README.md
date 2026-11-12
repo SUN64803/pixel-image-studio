@@ -40,6 +40,11 @@ window. The interface is available in **English and Thai**.
   from the current form, then re-apply with one click (including model and LoRA
   weights). Import A1111/Forge `parameters` blobs or collection-style text.
   Stored in `data/prompt_presets.json`.
+- **GPU power modes** — one-click **Low temp / Balanced / Performance**
+  presets (60 / 80 / 100 % of the card's default power limit) under
+  **Settings → GPU power mode**. A one-time setup installs a tiny root helper;
+  after that, switching needs no password. The app keeps the chosen mode while
+  it is open and restores the card default when it closes.
 - **Bilingual UI (English / Thai)** — switch under **Settings → Language**.
   First launch follows the OS locale and the choice is remembered. The built-in
   assistant replies in the UI language.
@@ -77,12 +82,12 @@ window. The interface is available in **English and Thai**.
 
 ### AppImage (recommended for new machines)
 
-Download `PixelSmith-Image-Studio-1.4.0-x86_64.AppImage` from the
+Download `PixelSmith-Image-Studio-1.5.0-x86_64.AppImage` from the
 [Releases](../../releases) page and make it executable:
 
 ```bash
-chmod +x PixelSmith-Image-Studio-1.4.0-x86_64.AppImage
-./PixelSmith-Image-Studio-1.4.0-x86_64.AppImage
+chmod +x PixelSmith-Image-Studio-1.5.0-x86_64.AppImage
+./PixelSmith-Image-Studio-1.5.0-x86_64.AppImage
 ```
 
 On first launch the app **installs everything automatically** and shows
@@ -99,6 +104,41 @@ environment variable. Internet is only required for the first launch; if an
 install is interrupted, relaunching resumes from where it stopped.
 
 > Build the AppImage yourself: `cd electron && npx electron-builder --linux AppImage`
+
+### GPU power modes (Linux + NVIDIA, optional)
+
+**Settings → GPU power mode** has three presets derived from the card's
+default power limit, so they work on any NVIDIA card:
+
+| Mode | Share of default limit | P102-100 (250 W default) |
+|---|---|---|
+| Low temp | 60 % | 150 W |
+| Balanced | 80 % | 200 W |
+| Performance | 100 % | 250 W |
+
+The first click asks for your system password once and installs:
+
+- `/usr/local/bin/pixelsmith-power` — a small root helper that sets and
+  remembers the wattage in `/var/lib/pixelsmith/power`
+- `/etc/sudoers.d/pixelsmith-power` — passwordless access for that helper only
+
+After that, switching modes is instant and needs no password. The app owns the
+limit while it is running:
+
+- the selected mode stays active (a small in-engine watchdog re-applies it if
+  the driver resets it during generation)
+- closing the app restores the card's default limit
+- the next launch applies the last mode selected in the app
+
+Remove `/etc/sudoers.d/pixelsmith-power` and `/usr/local/bin/pixelsmith-power`
+to revoke it.
+
+If `pkexec`/polkit is not available, run the setup once as root from a source
+checkout:
+
+```bash
+sudo bash host/pixelsmith-power-setup "$USER"
+```
 
 ### From source (development)
 
@@ -306,6 +346,10 @@ image-studio/
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/health` | engine/model/GPU/VRAM status |
+| GET | `/api/power` | GPU power mode, presets and live readings |
+| POST | `/api/power` | set a mode (`{mode}`) or wattage (`{watts}`) |
+| POST | `/api/power/reset` | restore the card default (keeps the saved choice) |
+| POST | `/api/power/setup` | one-time helper install (pkexec prompt) |
 | GET | `/api/models` | model list + default |
 | POST | `/api/models/select` | switch model (`{id}`) — frees VRAM |
 | GET | `/api/loras` | LoRA list + compatible families |

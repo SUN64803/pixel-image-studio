@@ -13,9 +13,11 @@ Jobs run one at a time on a background worker thread; the page polls
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import sys
@@ -23,6 +25,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -49,12 +52,56 @@ THUMBS = se.THUMBS
 HISTORY_FILE = DATA / "history.json"
 HOST = os.environ.get("IMGS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("IMGS_PORT", "47824"))
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 MAX_ACTIVE_JOBS = 8
 # Per-image upload cap for train datasets (photos are ~1–5 MB).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-app = FastAPI(title="PixelSmith Image Studio", version=VERSION)
+# ── GPU power modes ─────────────────────────────────────────────────────────
+# host/pixelsmith-power-setup installs a tiny root helper (one pkexec prompt)
+# and a sudoers rule.  The helper stores the chosen wattage in
+# /var/lib/pixelsmith/power.  The app owns the limit while it is running:
+#   * startup applies the saved mode
+#   * a small in-engine watchdog re-applies it if the driver resets it
+#   * shutdown restores the card's default (the saved choice is kept)
+# There is deliberately no systemd timer fighting the UI.
+POWER_HELPER = "/usr/local/bin/pixelsmith-power"
+POWER_SETUP = ROOT / "host" / "pixelsmith-power-setup"
+# Presets are fractions of the card's *default* power limit, which makes them
+# portable: 60/80/100 % of 250 W is exactly 150/200/250 W on the P102-100.
+POWER_PRESETS = (
+    ("low", 0.60),
+    ("balanced", 0.80),
+    ("performance", 1.00),
+)
+POWER_MIN_FALLBACK = 100
+POWER_MAX_FALLBACK = 350
+POWER_SUPPORTED = sys.platform.startswith("linux")
+POWER_WATCH_INTERVAL = float(
+    os.environ.get("PIXELSMITH_POWER_WATCH_INTERVAL", "15")
+)
+POWER_LOCK = threading.Lock()
+_POWER_READY_CACHE = {"at": 0.0, "value": False}
+# Last mode chosen in the app (mirrors /var/lib/pixelsmith/power).  Kept in
+# memory so the UI can show the saved mode even when the actual limit differs.
+_POWER_DESIRED: Optional[int] = None
+_POWER_ENFORCE = False
+_POWER_WATCH_STOP = threading.Event()
+_POWER_WATCH_THREAD: Optional[threading.Thread] = None
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # The app owns the GPU power limit while it runs: apply the saved mode on
+    # startup and restore the card default when the engine stops.
+    _power_startup()
+    try:
+        yield
+    finally:
+        _power_shutdown()
+
+
+app = FastAPI(title="PixelSmith Image Studio", version=VERSION, lifespan=_lifespan)
 
 # Everything the pages need is same-origin (scripts, styles, /files/ images,
 # /api fetches, the /studio iframe).  The only exception is the data: SVG
@@ -1992,6 +2039,390 @@ def api_assistant_vision_apply(job_id: str, req: VisionApplyRequest):
         "files": applied,
         "undo_id": undo_id,
     }
+
+
+# ── GPU power modes ─────────────────────────────────────────────────────────
+class PowerRequest(BaseModel):
+    watts: Optional[int] = Field(default=None, ge=1, le=2000)
+    mode: Optional[str] = None
+
+
+def _run_power(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run a power helper / sudo command (kept separate so tests can stub it)."""
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+
+
+def _power_readings() -> Optional[dict]:
+    """Read power/temperature fields from nvidia-smi (no root required)."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=power.limit,power.draw,temperature.gpu,"
+                "power.min_limit,power.max_limit,power.default_limit,"
+                "persistence_mode",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            text=True,
+        )
+    except Exception:  # noqa: BLE001 — no card / no driver
+        return None
+    line = out.strip().splitlines()[0] if out.strip() else ""
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 7:
+        return None
+
+    def num(value: str) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "limit": num(parts[0]),
+        "draw": num(parts[1]),
+        "temp": num(parts[2]),
+        "min": num(parts[3]),
+        "max": num(parts[4]),
+        "default": num(parts[5]),
+        "persistence": parts[6] or "unknown",
+    }
+
+
+def _power_modes(readings: Optional[dict]) -> list[dict]:
+    """Resolve the three presets against the current card's limits."""
+    base = (readings or {}).get("default") or (readings or {}).get("max") or 250.0
+    lo = int((readings or {}).get("min") or POWER_MIN_FALLBACK)
+    hi = int((readings or {}).get("max") or POWER_MAX_FALLBACK)
+    modes = []
+    for mode_id, ratio in POWER_PRESETS:
+        watts = max(lo, min(hi, int(round(float(base) * ratio))))
+        modes.append({"id": mode_id, "watts": watts})
+    return modes
+
+
+def _power_mode_for(limit: Optional[float], modes: list[dict]) -> Optional[str]:
+    if limit is None:
+        return None
+    best = min(modes, key=lambda m: abs(m["watts"] - float(limit)))
+    return best["id"] if abs(best["watts"] - float(limit)) <= 5 else None
+
+
+def _power_helper_installed() -> bool:
+    return os.path.isfile(POWER_HELPER) and os.access(POWER_HELPER, os.X_OK)
+
+
+def _power_json(text: str) -> Optional[dict]:
+    """Parse one helper JSON line, ignoring anything non-JSON."""
+    try:
+        data = json.loads((text or "").strip())
+    except Exception:  # noqa: BLE001 — plain text / empty output
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _power_configured(data: Optional[dict]) -> Optional[int]:
+    if not data or data.get("configured") is None:
+        return None
+    try:
+        return int(round(float(data["configured"])))
+    except (TypeError, ValueError):
+        return None
+
+
+def _power_helper_ready(force: bool = False) -> bool:
+    """True when the helper exists *and* the sudoers rule works.
+
+    Cached briefly: /api/power is polled by the settings card, and running
+    `sudo -n` every few seconds is unnecessary.
+    """
+    global _POWER_DESIRED
+    now = time.time()
+    if not force and now - _POWER_READY_CACHE["at"] < 15.0:
+        return _POWER_READY_CACHE["value"]
+    ok = False
+    if _power_helper_installed():
+        try:
+            proc = _run_power(
+                ["sudo", "-n", POWER_HELPER, "status"], timeout=5
+            )
+            ok = proc.returncode == 0
+            if ok:
+                configured = _power_configured(_power_json(proc.stdout))
+                if configured is not None:
+                    _POWER_DESIRED = configured
+        except Exception:  # noqa: BLE001 — sudo missing, timeout, …
+            ok = False
+    _POWER_READY_CACHE.update(at=now, value=ok)
+    return ok
+
+
+def _power_status_payload() -> dict:
+    readings = _power_readings()
+    modes = _power_modes(readings)
+    available = readings is not None
+    ready = _power_helper_ready() if available and POWER_SUPPORTED else False
+    limit = readings["limit"] if readings else None
+    saved = _POWER_DESIRED
+    return {
+        "ok": True,
+        "available": available,
+        "supported": POWER_SUPPORTED,
+        "installed": ready,
+        "setup_required": available and POWER_SUPPORTED and not ready,
+        "modes": modes,
+        # mode = what the card is doing right now, saved_mode = the app's choice.
+        "mode": _power_mode_for(limit, modes),
+        "saved": saved,
+        "saved_mode": _power_mode_for(saved, modes) if saved is not None else None,
+        "limit": limit,
+        "draw": readings["draw"] if readings else None,
+        "temp": readings["temp"] if readings else None,
+        "min": readings["min"] if readings else None,
+        "max": readings["max"] if readings else None,
+        "default": readings["default"] if readings else None,
+        "persistence": readings["persistence"] if readings else None,
+    }
+
+
+def _power_error(proc: subprocess.CompletedProcess) -> str:
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            data = json.loads((stream or "").strip())
+        except Exception:  # noqa: BLE001 — plain text, not JSON
+            continue
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+    text = (proc.stderr or proc.stdout or "").strip()
+    return text.splitlines()[-1] if text else ""
+
+
+def _power_apply_saved() -> Optional[dict]:
+    """Apply the remembered wattage (called once when the engine starts)."""
+    global _POWER_DESIRED, _POWER_ENFORCE
+    if not POWER_SUPPORTED or not _power_helper_installed():
+        return None
+    try:
+        with POWER_LOCK:
+            proc = _run_power(["sudo", "-n", POWER_HELPER, "apply"], timeout=90)
+    except Exception:  # noqa: BLE001 — sudo missing, timeout, …
+        return None
+    data = _power_json(proc.stdout)
+    configured = _power_configured(data)
+    if configured is not None:
+        _POWER_DESIRED = configured
+        # Even if the driver refused the limit right now, remember the choice
+        # so the watchdog can retry once the GPU is free.
+        _POWER_ENFORCE = True
+        _POWER_READY_CACHE.update(at=time.time(), value=True)
+    return data
+
+
+def _power_reset_now() -> Optional[dict]:
+    """Restore the card default without changing the saved choice."""
+    global _POWER_DESIRED, _POWER_ENFORCE
+    if not POWER_SUPPORTED or not _power_helper_installed():
+        return None
+    with POWER_LOCK:
+        _POWER_ENFORCE = False
+        try:
+            proc = _run_power(["sudo", "-n", POWER_HELPER, "reset"], timeout=20)
+        except Exception:  # noqa: BLE001
+            return None
+    data = _power_json(proc.stdout)
+    configured = _power_configured(data)
+    if configured is not None:
+        _POWER_DESIRED = configured
+    if data is not None and data.get("ok"):
+        _POWER_READY_CACHE.update(at=time.time(), value=True)
+    return data
+
+
+def _power_watchdog_tick() -> bool:
+    """Re-apply the saved mode when the driver has drifted away from it.
+
+    Returns True when a re-apply was attempted.  Cheap when nothing is wrong:
+    only reads nvidia-smi, never sudo.
+    """
+    global _POWER_DESIRED
+    if not _POWER_ENFORCE or _POWER_DESIRED is None:
+        return False
+    readings = _power_readings()
+    limit = readings.get("limit") if readings else None
+    if limit is None:
+        return False
+    if abs(float(limit) - float(_POWER_DESIRED)) <= 2.0:
+        return False
+    with POWER_LOCK:
+        if not _POWER_ENFORCE or _POWER_DESIRED is None:
+            return False
+        try:
+            proc = _run_power(["sudo", "-n", POWER_HELPER, "apply"], timeout=90)
+        except Exception:  # noqa: BLE001
+            return True
+        data = _power_json(proc.stdout)
+        configured = _power_configured(data)
+        if configured is not None:
+            _POWER_DESIRED = configured
+        return True
+
+
+def _power_watch_loop() -> None:
+    while not _POWER_WATCH_STOP.wait(POWER_WATCH_INTERVAL):
+        try:
+            _power_watchdog_tick()
+        except Exception:  # noqa: BLE001 — never kill the watchdog thread
+            pass
+
+
+def _power_startup() -> None:
+    """Apply the saved mode and start the drift watchdog."""
+    global _POWER_WATCH_THREAD
+    if os.environ.get("IMGS_POWER_AUTOSTART", "1") == "0":
+        return
+    _power_apply_saved()
+    if _POWER_WATCH_THREAD is None or not _POWER_WATCH_THREAD.is_alive():
+        _POWER_WATCH_STOP.clear()
+        _POWER_WATCH_THREAD = threading.Thread(
+            target=_power_watch_loop, name="power-watchdog", daemon=True
+        )
+        _POWER_WATCH_THREAD.start()
+
+
+def _power_shutdown() -> None:
+    """Stop enforcing and restore the card default before the process exits."""
+    _POWER_WATCH_STOP.set()
+    if os.environ.get("IMGS_POWER_AUTOSTART", "1") == "0":
+        return
+    _power_reset_now()
+
+
+@app.get("/api/power")
+def api_power():
+    return _power_status_payload()
+
+
+@app.post("/api/power")
+def api_power_set(req: PowerRequest):
+    global _POWER_DESIRED, _POWER_ENFORCE
+    readings = _power_readings()
+    if readings is None:
+        raise HTTPException(503, "ไม่พบการ์ด NVIDIA")
+    if not POWER_SUPPORTED:
+        raise HTTPException(400, "โหมดพลังงานใช้ได้เฉพาะ Linux")
+    if not _power_helper_ready(force=True):
+        raise HTTPException(
+            409, "ยังไม่ได้เปิดใช้งานโหมดพลังงาน — กดปุ่มเปิดใช้งานก่อน"
+        )
+    modes = _power_modes(readings)
+    if req.mode:
+        match = next((m for m in modes if m["id"] == req.mode), None)
+        if match is None:
+            raise HTTPException(400, f"ไม่รู้จักโหมด: {req.mode}")
+        watts = match["watts"]
+    elif req.watts is not None:
+        watts = int(req.watts)
+    else:
+        raise HTTPException(400, "ต้องระบุ watts หรือ mode")
+    lo = int(readings["min"] or POWER_MIN_FALLBACK)
+    hi = int(readings["max"] or POWER_MAX_FALLBACK)
+    if not lo <= watts <= hi:
+        raise HTTPException(400, f"power limit ต้องอยู่ระหว่าง {lo}–{hi} W")
+
+    with POWER_LOCK:
+        try:
+            proc = _run_power(["sudo", "-n", POWER_HELPER, "set", str(watts)])
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"เรียกตัวช่วยไม่สำเร็จ: {exc}") from exc
+        if proc.returncode != 0:
+            detail = _power_error(proc)
+            lowered = detail.lower()
+            if "password is required" in lowered or "not allowed" in lowered:
+                _POWER_READY_CACHE.update(at=0.0, value=False)
+                raise HTTPException(
+                    403, "sudoers ยังไม่ได้ตั้งค่า — กดปุ่มเปิดใช้งานโหมดพลังงานอีกครั้ง"
+                )
+            # The helper saves the choice before applying it.  If only the
+            # driver refused for a moment (GPU busy), keep the choice and let
+            # the watchdog retry instead of rolling back to the old mode.
+            configured = _power_configured(_power_json(proc.stdout))
+            if configured is not None:
+                _POWER_DESIRED = configured
+                _POWER_ENFORCE = True
+                _POWER_READY_CACHE.update(at=time.time(), value=True)
+                return _power_status_payload()
+            raise HTTPException(500, detail or "ตั้งค่า power limit ไม่สำเร็จ")
+        _POWER_DESIRED = watts
+        _POWER_ENFORCE = True
+
+    _POWER_READY_CACHE.update(at=time.time(), value=True)
+    return _power_status_payload()
+
+
+@app.post("/api/power/reset")
+def api_power_reset():
+    """Restore the card default; the saved choice stays for the next launch."""
+    global _POWER_DESIRED, _POWER_ENFORCE
+    if not POWER_SUPPORTED:
+        raise HTTPException(400, "โหมดพลังงานใช้ได้เฉพาะ Linux")
+    if not _power_helper_ready(force=True):
+        raise HTTPException(
+            409, "ยังไม่ได้เปิดใช้งานโหมดพลังงาน — กดปุ่มเปิดใช้งานก่อน"
+        )
+    with POWER_LOCK:
+        _POWER_ENFORCE = False
+        try:
+            proc = _run_power(["sudo", "-n", POWER_HELPER, "reset"], timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"เรียกตัวช่วยไม่สำเร็จ: {exc}") from exc
+    data = _power_json(proc.stdout)
+    configured = _power_configured(data)
+    if configured is not None:
+        _POWER_DESIRED = configured
+    if proc.returncode != 0 or (data is not None and data.get("ok") is False):
+        detail = _power_error(proc)
+        raise HTTPException(500, detail or "คืนค่า power limit ไม่สำเร็จ")
+
+    _POWER_READY_CACHE.update(at=time.time(), value=True)
+    return _power_status_payload()
+
+
+@app.post("/api/power/setup")
+def api_power_setup():
+    if not POWER_SUPPORTED:
+        raise HTTPException(400, "โหมดพลังงานใช้ได้เฉพาะ Linux")
+    if not POWER_SETUP.is_file():
+        raise HTTPException(500, "ไม่พบไฟล์ติดตั้ง (host/pixelsmith-power-setup)")
+    pkexec = shutil.which("pkexec")
+    if not pkexec:
+        raise HTTPException(
+            400, "ไม่พบ pkexec — ติดตั้ง polkit หรือรันสคริปต์ติดตั้งด้วย sudo"
+        )
+    user = getpass.getuser()
+    if not user or user == "root":
+        raise HTTPException(400, "ไม่สามารถระบุผู้ใช้เดสก์ท็อปสำหรับตั้งค่า sudoers")
+
+    with POWER_LOCK:
+        try:
+            proc = _run_power(
+                [pkexec, "/bin/bash", str(POWER_SETUP), user], timeout=180
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(
+                504, "ติดตั้งไม่เสร็จภายในเวลา — ลองใหม่แล้วป้อนรหัสให้เร็วขึ้น"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"เปิดตัวติดตั้งไม่สำเร็จ: {exc}") from exc
+    if proc.returncode in (126, 127):
+        raise HTTPException(403, "การยืนยันถูกยกเลิกหรือไม่ได้รับอนุญาต")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise HTTPException(500, detail or "ติดตั้งไม่สำเร็จ")
+
+    _POWER_READY_CACHE.update(at=0.0, value=True)
+    return _power_status_payload()
 
 
 # ── static pages ─────────────────────────────────────────────────────────────

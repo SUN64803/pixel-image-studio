@@ -68,6 +68,16 @@
     border: 2.5px solid rgba(139,92,246,.25); border-top-color: var(--accent-a); animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── blocking status ─────────────────────────────────────── */
+  #blocking { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+    padding: 24px; background: rgba(3,6,10,.78); backdrop-filter: blur(4px); cursor: progress; }
+  #blocking.hidden { display: none; }
+  .blocking-box { display: grid; place-items: center; gap: 14px; text-align: center;
+    width: min(420px, 92vw); padding: 26px 24px; background: #0f151d;
+    border: 1px solid #26313f; border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+  .blocking-box p { margin: 0; font-size: 13.5px; line-height: 1.6; color: #e2e8f6; }
+  .blocking-box .spin { margin: 0; }
+
   /* ── log modal ───────────────────────────────────────────── */
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px;
     background: rgba(3,6,10,.7); backdrop-filter: blur(4px); }

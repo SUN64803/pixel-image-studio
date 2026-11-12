@@ -430,6 +430,26 @@
           <div class="lora-list" id="loraManagerList"></div>
         </details>
 
+        <div class="field power-card">
+          <div class="label-row">
+            <span class="label">โหมดพลังงาน GPU</span>
+            <span class="hint" id="powerState">…</span>
+          </div>
+          <div class="power-modes" id="powerModes">
+            <button type="button" class="power-mode" data-mode="low">
+              <b>Low temp</b><span class="power-watts">—</span>
+            </button>
+            <button type="button" class="power-mode" data-mode="balanced">
+              <b>Balanced</b><span class="power-watts">—</span>
+            </button>
+            <button type="button" class="power-mode" data-mode="performance">
+              <b>Performance</b><span class="power-watts">—</span>
+            </button>
+          </div>
+          <p class="micro" id="powerHint">…</p>
+          <button type="button" class="ghost-btn hidden" id="powerSetup">เปิดใช้งานโหมดพลังงาน</button>
+        </div>
+
         <div class="field">
           <div class="label-row">
             <span class="label">ที่เก็บไฟล์</span>
@@ -576,6 +596,29 @@
         <p id="lbNeg"></p>
       </details>
     </div>
+  </div>
+</div>
+
+<!-- in-app confirm dialog (never use native confirm(): it breaks the text
+     caret/focus in Electron until the window is restarted) -->
+<div class="modal hidden" id="confirmModal" role="alertdialog" aria-modal="true"
+     aria-labelledby="confirmTitle" aria-describedby="confirmText">
+  <div class="modal-backdrop" data-confirm-cancel="1"></div>
+  <div class="modal-card confirm-card">
+    <h3 id="confirmTitle">ยืนยันการทำรายการ</h3>
+    <p id="confirmText"></p>
+    <div class="confirm-actions">
+      <button type="button" class="btn" id="confirmCancel">ยกเลิก</button>
+      <button type="button" class="btn danger" id="confirmOk">ยืนยัน</button>
+    </div>
+  </div>
+</div>
+
+<!-- blocking status for slow operations (power mode, model load, …) -->
+<div class="busy-overlay hidden" id="busyOverlay" role="alert" aria-live="assertive">
+  <div class="busy-box">
+    <div class="busy-spin" aria-hidden="true"></div>
+    <p id="busyText">กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น</p>
   </div>
 </div>
 

@@ -9,6 +9,8 @@ from pathlib import Path
 _TEST_DATA = tempfile.mkdtemp(prefix="imgs-test-data-")
 os.environ.setdefault("IMGS_DATA", _TEST_DATA)
 os.environ.setdefault("IMGS_PORT", "47999")
+# Tests must never touch the real GPU power limit through the startup hook.
+os.environ.setdefault("IMGS_POWER_AUTOSTART", "0")
 # The Host-guard middleware trusts loopback hostnames only; tests connect
 # via Starlette's default "testserver" base URL.
 os.environ.setdefault("IMGS_TRUSTED_HOSTS", "testserver")

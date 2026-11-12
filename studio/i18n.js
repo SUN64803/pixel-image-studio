@@ -170,6 +170,38 @@
     "ทำงานในเครื่อง 100%": "Runs 100% locally",
     "ผู้ช่วย AI": "AI assistant",
 
+    // GPU power modes
+    "โหมดพลังงาน GPU": "GPU power mode",
+    "ไม่พบการ์ด NVIDIA": "No NVIDIA GPU found",
+    "โหมดพลังงานใช้ได้เฉพาะเครื่องที่มีการ์ด NVIDIA":
+      "Power modes require an NVIDIA GPU",
+    "ใช้ได้เฉพาะ Linux": "Linux only",
+    "โหมดพลังงานใช้ได้เฉพาะ Linux ที่มีการ์ด NVIDIA":
+      "Power modes are available on Linux with an NVIDIA GPU",
+    "โหมดพลังงานใช้ได้เฉพาะ Linux": "Power modes are available on Linux only",
+    "เปิดใช้งานครั้งเดียว (ต้องใส่รหัสผ่านระบบ) — หลังจากนั้นสลับโหมดได้ทันทีโดยไม่ต้องใส่รหัส":
+      "One-time setup (system password required) — after that you can switch modes instantly",
+    "ใช้โหมดที่เลือกตลอดเวลาแอปเปิด — เมื่อปิดแอปจะกลับไปใช้ค่าเริ่มต้นของการ์ด":
+      "The selected mode stays active while the app is open — closing the app restores the card's default limit",
+    "เปิดใช้งานโหมดพลังงาน": "Enable power control",
+    "กำลังเปิดใช้งาน…": "Enabling…",
+    "เปิดใช้งานโหมดพลังงานแล้ว": "Power control enabled",
+    "ยังไม่ได้เปิดใช้งานโหมดพลังงาน — กดปุ่มเปิดใช้งานก่อน":
+      "Power control is not enabled yet — click Enable power control first",
+    "sudoers ยังไม่ได้ตั้งค่า — กดปุ่มเปิดใช้งานโหมดพลังงานอีกครั้ง":
+      "sudoers is not configured — click Enable power control again",
+    "ไม่พบ pkexec — ติดตั้ง polkit หรือรันสคริปต์ติดตั้งด้วย sudo":
+      "pkexec not found — install polkit or run the setup script with sudo",
+    "การยืนยันถูกยกเลิกหรือไม่ได้รับอนุญาต": "Authorization was cancelled or denied",
+    "ติดตั้งไม่สำเร็จ": "Setup failed",
+    "ต้องระบุ watts หรือ mode": "Provide either watts or mode",
+    "ไม่พบไฟล์ติดตั้ง (host/pixelsmith-power-setup)":
+      "Setup file not found (host/pixelsmith-power-setup)",
+    "ไม่สามารถระบุผู้ใช้เดสก์ท็อปสำหรับตั้งค่า sudoers":
+      "Could not determine the desktop user for the sudoers rule",
+    "ติดตั้งไม่เสร็จภายในเวลา — ลองใหม่แล้วป้อนรหัสให้เร็วขึ้น":
+      "Setup timed out — try again and enter the password promptly",
+
     // stage
     "ผลลัพธ์": "Results",
     "ภาพที่สร้างจะถูกเก็บไว้ในเครื่องนี้": "Generated images are stored on this machine",
@@ -625,10 +657,33 @@
     "สมอง: กฎ (rule-based) — เข้าใจคำสั่งตามตัวอย่างนี้:":
       "Brain: rules (rule-based) — it understands commands like these examples:",
     "ไฟล์ยังไม่ครบ": "files incomplete",
+
+    // in-app confirm dialog + blocking status
+    "ยืนยันการทำรายการ": "Confirm action",
+    "กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Applying changes. Please don't switch windows or do anything else.",
+    "กำลังเปิดใช้งานโหมดพลังงาน กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Enabling power modes. Please don't switch windows or do anything else.",
+    "กำลังเปลี่ยนโมเดลผู้ช่วย กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Switching the assistant model. Please don't switch windows or do anything else.",
+    "กำลังล้างประวัติ กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Clearing history. Please don't switch windows or do anything else.",
+    "กำลังโหลดโมเดล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Loading the model. Please don't switch windows or do anything else.",
+    "กำลังคืนหน่วยความจำโมเดล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Freeing model memory. Please don't switch windows or do anything else.",
+    "กำลังเปิดใช้งาน…": "Enabling…",
   };
 
   // ── dynamic messages: regex on the normalized Thai text ───────────────────
   const PATTERNS = [
+    [/^เปลี่ยนโหมดพลังงานเป็น (.+) \((\d+) W\) แล้ว$/,
+      (m) => `Power mode set to ${m[1]} (${m[2]} W)`],
+    [/^ไม่รู้จักโหมด: (.+)$/, (m) => `Unknown mode: ${m[1]}`],
+    [/^power limit ต้องอยู่ระหว่าง (\d+)–(\d+) W$/,
+      (m) => `Power limit must be between ${m[1]}–${m[2]} W`],
+    [/^เรียกตัวช่วยไม่สำเร็จ: (.+)$/, (m) => `Could not run the helper: ${m[1]}`],
+    [/^เปิดตัวติดตั้งไม่สำเร็จ: (.+)$/, (m) => `Could not start setup: ${m[1]}`],
     [/^กำลังขยาย (\d+)\/(\d+)$/, (m) => `Upscaling ${m[1]}/${m[2]}`],
     [/^ภาพใหญ่เกินไป: (\d+)×(\d+) ×4 = (\d+)×(\d+) \(สูงสุด (\d+)px ต่อด้าน\)$/,
       (m) => `Image too large: ${m[1]}×${m[2]} ×4 = ${m[3]}×${m[4]} (max ${m[5]}px per side)`],
@@ -1040,8 +1095,18 @@
     }
   }
 
+  // Public translator: unlike the internal translateOne() (which returns null
+  // to mean "no translation"), this always returns usable text — the source
+  // string falls through unchanged. Callers assign the result straight into
+  // textContent, so returning null would blank the UI.
+  function tr(text) {
+    const out = translateOne(text);
+    if (out != null) return out;
+    return text == null ? "" : String(text);
+  }
+
   window.I18N = {
-    tr: translateOne,
+    tr,
     apply,
     setLang,
     getLang: () => lang,

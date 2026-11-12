@@ -42,6 +42,14 @@
   </div>
 </div>
 
+<!-- blocking status while a slow operation runs (model load/unload, …) -->
+<div id="blocking" class="hidden" role="alert" aria-live="assertive">
+  <div class="blocking-box">
+    <div class="spin"></div>
+    <p id="blockingText">กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น</p>
+  </div>
+</div>
+
 <div class="modal" id="logModal" hidden>
   <div class="modal-card">
     <div class="modal-head">

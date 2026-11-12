@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# pixelsmith-power — apply an NVIDIA power limit for PixelSmith Image Studio.
+#
+# Installed as /usr/local/bin/pixelsmith-power by pixelsmith-power-setup.
+# The engine calls it through `sudo -n` while the app is open:
+#   - `set` remembers the chosen wattage and applies it
+#   - `apply` re-applies the remembered wattage (startup / drift watchdog)
+#   - `reset` applies the card's default wattage but keeps the saved choice
+#
+# There is deliberately no systemd timer: the app owns the limit while it is
+# running and restores the card default when it closes.
+#
+# Usage:
+#   pixelsmith-power set <watts>   set + remember (root)
+#   pixelsmith-power apply         re-apply the remembered value (root)
+#   pixelsmith-power reset         restore the card default (root)
+#   pixelsmith-power status        JSON status (read-only)
+#
+# Env overrides (used by tests):
+#   PIXELSMITH_SMI               path to nvidia-smi
+#   PIXELSMITH_POWER_STATE_DIR   state directory (default /var/lib/pixelsmith)
+set -uo pipefail
+
+SMI="${PIXELSMITH_SMI:-/usr/bin/nvidia-smi}"
+STATE_DIR="${PIXELSMITH_POWER_STATE_DIR:-/var/lib/pixelsmith}"
+STATE_FILE="$STATE_DIR/power"
+RETRIES="${PIXELSMITH_POWER_RETRIES:-10}"
+TAG=pixelsmith-power
+
+die() { echo "$TAG: $*" >&2; exit 1; }
+usage() { echo "usage: $TAG {set <watts>|apply|reset|status}" >&2; exit 2; }
+
+gpu_ready() { "$SMI" --query-gpu=name --format=csv,noheader >/dev/null 2>&1; }
+
+q() {  # q <field> -> first value, trimmed
+  "$SMI" --query-gpu="$1" --format=csv,noheader,nounits 2>/dev/null \
+    | head -1 | tr -d '[:space:]'
+}
+
+whole() {  # whole <number> -> rounded integer
+  awk -v x="${1:-0}" 'BEGIN { printf "%d", x + 0.5 }'
+}
+
+card_min() {
+  local v
+  v=$(q power.min_limit)
+  [ -n "$v" ] && whole "$v" || printf '1'
+}
+
+card_max() {
+  local v
+  v=$(q power.max_limit)
+  [ -n "$v" ] && whole "$v" || printf '1000'
+}
+
+current_limit() { q power.limit; }
+
+card_default() {
+  local v
+  v=$(q power.default_limit)
+  [ -n "$v" ] && whole "$v" || card_max
+}
+
+is_num() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+in_range() {
+  is_num "$1" && awk -v w="$1" -v lo="$2" -v hi="$3" \
+    'BEGIN { exit !(w + 0 >= lo + 0 && w + 0 <= hi + 0) }'
+}
+
+clamp_watts() {
+  awk -v w="$1" -v lo="$2" -v hi="$3" 'BEGIN {
+    w += 0; lo += 0; hi += 0
+    if (w < lo) w = lo
+    if (w > hi) w = hi
+    printf "%d", w
+  }'
+}
+
+save_state() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null || true
+}
+
+stored_watts() {
+  local w=""
+  [ -r "$STATE_FILE" ] && w=$(head -1 "$STATE_FILE" 2>/dev/null | tr -d '[:space:]')
+  if is_num "$w"; then printf '%s' "$w"; else card_default; fi
+}
+
+apply_watts() {  # returns 0 on success
+  local watts="$1" attempt cur
+  gpu_ready || return 1
+  # Persistence mode keeps the GPU initialised.  Without it `nvidia-smi -pl`
+  # can return exit 0 while leaving the limit unchanged right after boot
+  # (observed 2026-11-11: "250.00W -> 250.00W").
+  "$SMI" -pm 1 >/dev/null 2>&1 || true
+  for attempt in $(seq 1 "$RETRIES"); do
+    cur=$(current_limit)
+    if is_num "$cur" && awk -v a="$cur" -v b="$watts" \
+        'BEGIN { exit !(a + 0 == b + 0) }'; then
+      return 0
+    fi
+    "$SMI" -pl "$watts" >/dev/null 2>&1 || true
+    sleep 1
+    cur=$(current_limit)
+    if is_num "$cur" && awk -v a="$cur" -v b="$watts" \
+        'BEGIN { exit !(a + 0 == b + 0) }'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+json_status() {
+  local limit draw temp pm lo hi dflt
+  limit=$(current_limit)
+  draw=$(q power.draw)
+  temp=$(q temperature.gpu)
+  pm=$(q persistence_mode)
+  lo=$(card_min)
+  hi=$(card_max)
+  dflt=$(card_default)
+  [ -n "$limit" ] || limit=null
+  [ -n "$draw" ] || draw=null
+  [ -n "$temp" ] || temp=null
+  [ -n "$pm" ] || pm=unknown
+  printf '{"ok":true,"configured":%s,"limit":%s,"draw":%s,"temp":%s,"min":%s,"max":%s,"default":%s,"persistence":"%s"}\n' \
+    "$(stored_watts)" "$limit" "$draw" "$temp" "$lo" "$hi" "$dflt" "$pm"
+}
+
+cmd="${1:-status}"
+shift || true
+
+if ! gpu_ready; then
+  echo '{"ok":false,"error":"GPU not ready"}'
+  exit 1
+fi
+
+case "$cmd" in
+  status)
+    json_status
+    ;;
+  set)
+    [ $# -ge 1 ] || usage
+    watts="${1:-}"
+    if ! is_num "$watts"; then
+      echo '{"ok":false,"error":"watts must be a whole number"}'
+      exit 2
+    fi
+    lo=$(card_min)
+    hi=$(card_max)
+    if ! in_range "$watts" "$lo" "$hi"; then
+      printf '{"ok":false,"error":"watts out of range","min":%s,"max":%s}\n' "$lo" "$hi"
+      exit 2
+    fi
+    # Remember the choice before applying it.  If the driver refuses the limit
+    # right now (for example while the GPU is busy) the app watchdog retries;
+    # we never roll the saved choice back to the previous mode.
+    save_state "$watts"
+    if apply_watts "$watts"; then
+      json_status
+    else
+      printf '{"ok":false,"error":"could not set power limit","configured":%s}\n' "$watts"
+      exit 1
+    fi
+    ;;
+  apply)
+    watts=$(stored_watts)
+    lo=$(card_min)
+    hi=$(card_max)
+    watts=$(clamp_watts "$watts" "$lo" "$hi")
+    if apply_watts "$watts"; then
+      json_status
+    else
+      # Never fail the boot or the app watchdog — the next run tries again.
+      printf '{"ok":false,"error":"could not apply power limit","configured":%s}\n' "$watts"
+      exit 0
+    fi
+    ;;
+  reset)
+    watts=$(card_default)
+    lo=$(card_min)
+    hi=$(card_max)
+    watts=$(clamp_watts "$watts" "$lo" "$hi")
+    if apply_watts "$watts"; then
+      json_status
+    else
+      # Keep the saved choice: the app will apply it again on next launch.
+      printf '{"ok":false,"error":"could not reset power limit","configured":%s}\n' "$(stored_watts)"
+      exit 0
+    fi
+    ;;
+  *)
+    usage
+    ;;
+esac
