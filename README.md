@@ -82,12 +82,12 @@ window. The interface is available in **English and Thai**.
 
 ### AppImage (recommended for new machines)
 
-Download `PixelSmith-Image-Studio-1.5.0-x86_64.AppImage` from the
+Download `PixelSmith-Image-Studio-1.5.1-x86_64.AppImage` from the
 [Releases](../../releases) page and make it executable:
 
 ```bash
-chmod +x PixelSmith-Image-Studio-1.5.0-x86_64.AppImage
-./PixelSmith-Image-Studio-1.5.0-x86_64.AppImage
+chmod +x PixelSmith-Image-Studio-1.5.1-x86_64.AppImage
+./PixelSmith-Image-Studio-1.5.1-x86_64.AppImage
 ```
 
 On first launch the app **installs everything automatically** and shows

@@ -52,7 +52,7 @@ THUMBS = se.THUMBS
 HISTORY_FILE = DATA / "history.json"
 HOST = os.environ.get("IMGS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("IMGS_PORT", "47824"))
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 MAX_ACTIVE_JOBS = 8
 # Per-image upload cap for train datasets (photos are ~1–5 MB).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
