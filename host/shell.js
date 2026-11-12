@@ -23,19 +23,37 @@
   function gb(bytes) { return bytes ? (bytes / 1073741824).toFixed(1) : "0"; }
 
   const blocking = $("#blocking");
-  let blockingDepth = 0;
-  function showBlocking(message) {
+  let blockingDepth = 0;   // operations started by the host bar
+  let externalBusy = false; // the studio iframe asked for the overlay
+  let blockingText = "กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น";
+
+  function updateBlocking() {
     if (!blocking) return;
-    blockingDepth += 1;
     const text = $("#blockingText");
-    if (text && message) text.textContent = message;
-    blocking.classList.remove("hidden");
+    if (text) text.textContent = blockingText;
+    blocking.classList.toggle("hidden", !(blockingDepth > 0 || externalBusy));
+  }
+  function showBlocking(message) {
+    blockingDepth += 1;
+    if (message) blockingText = message;
+    updateBlocking();
   }
   function hideBlocking() {
     blockingDepth = Math.max(0, blockingDepth - 1);
-    if (blockingDepth > 0) return;
-    if (blocking) blocking.classList.add("hidden");
+    updateBlocking();
   }
+
+  // The studio runs in an iframe and cannot cover the host bar. It asks the
+  // host to show this full-window overlay while it applies a slow setting, so
+  // the bar buttons are not clickable either.
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const msg = event.data;
+    if (!msg || msg.pixelsmithBusy !== true) return;
+    externalBusy = !!msg.on;
+    if (msg.on && msg.text) blockingText = msg.text;
+    updateBlocking();
+  });
 
   function showBanner(message) {
     if (!message) { banner.classList.remove("show"); return; }
@@ -160,6 +178,65 @@
   $("#logRefresh").addEventListener("click", loadLog);
   logModal.addEventListener("click", (e) => { if (e.target === logModal) logModal.hidden = true; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") logModal.hidden = true; });
+
+  // ── in-app dialog (replaces native message boxes) ───────────────────────
+  // The main process asks for About / install guide / download-finished
+  // messages through IPC; rendering them here keeps Chromium's focus and text
+  // caret intact (native dialogs can break them on Linux).
+  const appDialog = $("#appDialog");
+  const appDialogTitle = $("#appDialogTitle");
+  const appDialogMessage = $("#appDialogMessage");
+  const appDialogDetail = $("#appDialogDetail");
+  const appDialogActions = $("#appDialogActions");
+  let appDialogId = null;
+  let appDialogCancel = 0;
+
+  function closeAppDialog(response) {
+    if (!appDialog || appDialog.hidden) return;
+    appDialog.hidden = true;
+    const id = appDialogId;
+    const cancel = appDialogCancel;
+    appDialogId = null;
+    appDialogActions.textContent = "";
+    if (id != null && window.pixelApp && window.pixelApp.dialogResult) {
+      window.pixelApp.dialogResult(id, response == null ? cancel : response);
+    }
+  }
+
+  function showAppDialog(payload) {
+    if (!appDialog) return;
+    appDialogId = payload.id;
+    appDialogCancel = Number.isInteger(payload.cancelId) ? payload.cancelId : 0;
+    appDialogTitle.textContent = payload.title || "";
+    appDialogMessage.textContent = payload.message || "";
+    appDialogDetail.textContent = payload.detail || "";
+    appDialogDetail.hidden = !payload.detail;
+    appDialogActions.textContent = "";
+    const labels = Array.isArray(payload.buttons) && payload.buttons.length
+      ? payload.buttons
+      : ["OK"];
+    const defaultId = Number.isInteger(payload.defaultId) ? payload.defaultId : 0;
+    labels.forEach((label, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      if (index === defaultId) btn.className = "primary";
+      btn.textContent = label;
+      btn.addEventListener("click", () => closeAppDialog(index));
+      appDialogActions.appendChild(btn);
+    });
+    appDialog.hidden = false;
+    const first = appDialogActions.querySelector(".primary") || appDialogActions.firstElementChild;
+    if (first) first.focus();
+  }
+
+  if (window.pixelApp && window.pixelApp.onAppDialog) {
+    window.pixelApp.onAppDialog((payload) => { if (payload) showAppDialog(payload); });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !appDialog || appDialog.hidden) return;
+    e.preventDefault();
+    closeAppDialog(null);
+  });
 
   refresh();
   setInterval(refresh, 3000);

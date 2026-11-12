@@ -29,4 +29,16 @@ contextBridge.exposeInMainWorld("pixelApp", {
     ipcRenderer.on("install:update", handler);
     return () => ipcRenderer.removeListener("install:update", handler);
   },
+  // in-app message boxes (About, install guide, download finished) — the main
+  // process sends the payload, the host page renders it and replies with the
+  // index of the clicked button.
+  onAppDialog: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const handler = (_e, payload) => {
+      try { cb(payload); } catch (e) { /* page handler bug must not crash IPC */ }
+    };
+    ipcRenderer.on("app-dialog", handler);
+    return () => ipcRenderer.removeListener("app-dialog", handler);
+  },
+  dialogResult: (id, response) => ipcRenderer.send("app-dialog-result", { id, response }),
 });

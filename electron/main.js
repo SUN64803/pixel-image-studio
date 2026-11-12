@@ -124,6 +124,20 @@ function postJson(pathname, body, timeout = 8000) {
   });
 }
 
+// Keep the engine log from growing without bound: once it passes 5 MB it is
+// renamed to engine.log.1 (replacing the previous one) before the engine
+// reopens it.
+function rotateLog(file) {
+  try {
+    if (fs.statSync(file).size < 5 * 1024 * 1024) return;
+    const old = file + ".1";
+    try { fs.unlinkSync(old); } catch (e) { /* no previous log */ }
+    fs.renameSync(file, old);
+  } catch (e) {
+    /* first run: nothing to rotate */
+  }
+}
+
 function startEngineProcess() {
   const py = enginePython();
   if (!fs.existsSync(py)) {
@@ -131,6 +145,7 @@ function startEngineProcess() {
   }
   try {
     fs.mkdirSync(DATA, { recursive: true });
+    rotateLog(LOG_FILE);
     const out = fs.openSync(LOG_FILE, "a");
     fs.writeSync(out, `\n\n──── ${new Date().toISOString()} starting engine ────\n`);
     engineProc = spawn(py, [path.join(ENGINE_DIR, "server.py")], {
@@ -608,6 +623,64 @@ function refocusWindow() {
   }
 }
 
+// In-app message boxes. The host page renders the payload and replies with the
+// index of the clicked button, so Chromium never loses focus/caret state.
+// While the window shows the loading or first-run installer page the host is
+// not there to render it, so fall back to a native box (no caret to break).
+let appDialogSeq = 0;
+const pendingAppDialogs = new Map();
+
+function showAppDialog(options = {}) {
+  const opts = {
+    title: options.title || "",
+    message: options.message || "",
+    detail: options.detail || "",
+    buttons: Array.isArray(options.buttons) && options.buttons.length ? options.buttons : ["OK"],
+    defaultId: Number.isInteger(options.defaultId) ? options.defaultId : 0,
+    cancelId: Number.isInteger(options.cancelId) ? options.cancelId : 0,
+  };
+  const hostReady =
+    win && !win.isDestroyed() &&
+    String(win.webContents.getURL() || "").startsWith(BASE_URL);
+  if (!hostReady) {
+    const optsNative = {
+      type: "info",
+      title: opts.title,
+      message: opts.message,
+      detail: opts.detail,
+      buttons: opts.buttons,
+      defaultId: opts.defaultId,
+      cancelId: opts.cancelId,
+    };
+    const box = win && !win.isDestroyed()
+      ? dialog.showMessageBox(win, optsNative)
+      : dialog.showMessageBox(optsNative);
+    return box
+      .then((r) => { refocusWindow(); return r.response; })
+      .catch(() => { refocusWindow(); return opts.cancelId; });
+  }
+  return new Promise((resolve) => {
+    const id = ++appDialogSeq;
+    pendingAppDialogs.set(id, { resolve, cancelId: opts.cancelId });
+    win.webContents.send("app-dialog", { id, ...opts });
+  });
+}
+
+ipcMain.on("app-dialog-result", (_ev, msg) => {
+  if (!msg || !pendingAppDialogs.has(msg.id)) return;
+  const pending = pendingAppDialogs.get(msg.id);
+  pendingAppDialogs.delete(msg.id);
+  pending.resolve(Number.isInteger(msg.response) ? msg.response : 0);
+  refocusWindow();
+});
+
+function resolvePendingAppDialogs() {
+  for (const [id, pending] of pendingAppDialogs) {
+    pendingAppDialogs.delete(id);
+    pending.resolve(pending.cancelId);
+  }
+}
+
 async function createWindow() {
   win = new BrowserWindow({
     width: 1480,
@@ -637,18 +710,16 @@ async function createWindow() {
         if (state !== "completed") return;
         const target = item.getSavePath();
         if (!target) return;
-        dialog.showMessageBox(win, {
-          type: "info",
+        showAppDialog({
           title: "ดาวน์โหลดเสร็จแล้ว",
           message: "บันทึก " + path.basename(target),
           detail: target,
           buttons: ["เปิดโฟลเดอร์", "ปิด"],
           defaultId: 0,
           cancelId: 1,
-        }).then((r) => {
-          refocusWindow();
-          if (r.response === 0) shell.showItemInFolder(target);
-        }).catch(() => { refocusWindow(); });
+        }).then((response) => {
+          if (response === 0) shell.showItemInFolder(target);
+        });
       });
     });
   }
@@ -658,7 +729,7 @@ async function createWindow() {
     return { action: "deny" };
   });
 
-  win.on("closed", () => { win = null; });
+  win.on("closed", () => { win = null; resolvePendingAppDialogs(); });
   await launch();
 }
 
@@ -700,8 +771,7 @@ function buildMenu() {
       submenu: [
         {
           label: "คู่มือติดตั้ง",
-          click: () => dialog.showMessageBox(win, {
-            type: "info",
+          click: () => showAppDialog({
             title: "ติดตั้ง Image Studio",
             message: "ติดตั้งครั้งแรกครั้งเดียว",
             detail:
@@ -714,15 +784,13 @@ function buildMenu() {
             buttons: ["เปิดโฟลเดอร์โปรแกรม", "ปิด"],
             defaultId: 0,
             cancelId: 1,
-          }).then((r) => {
-            refocusWindow();
-            if (r.response === 0) shell.openPath(ROOT);
-          }).catch(() => { refocusWindow(); }),
+          }).then((response) => {
+            if (response === 0) shell.openPath(ROOT);
+          }),
         },
         {
           label: "About PixelSmith Image Studio",
-          click: () => dialog.showMessageBox(win, {
-            type: "info",
+          click: () => showAppDialog({
             title: "About",
             message: "PixelSmith Image Studio",
             detail:
@@ -732,7 +800,7 @@ function buildMenu() {
               `Engine: ${BASE_URL}\n` +
               `Program folder: ${ROOT}`,
             buttons: ["OK"],
-          }).then(() => refocusWindow()).catch(() => refocusWindow()),
+          }),
         },
       ],
     },

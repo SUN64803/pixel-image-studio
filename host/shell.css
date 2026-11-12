@@ -90,6 +90,16 @@
   .modal-card pre { margin: 0; padding: 14px 16px; overflow: auto; font: 11px/1.5 ui-monospace, "JetBrains Mono", monospace;
     color: #b7c6d8; white-space: pre-wrap; word-break: break-word; }
 
+  /* ── in-app dialog ───────────────────────────────────────── */
+  .app-dialog-card { width: min(560px, 94vw); max-height: 86vh; padding: 20px 22px 18px; gap: 10px; }
+  .app-dialog-card h3 { margin: 0; font-size: 14.5px; }
+  .app-dialog-card p { margin: 0; font-size: 12.5px; line-height: 1.6; color: #cbd6e4; white-space: pre-wrap; }
+  .app-dialog-detail { max-height: 42vh; border: 1px solid #1c2530; border-radius: 9px;
+    background: #0a1017; padding: 10px 12px; }
+  .app-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .app-dialog-actions button.primary { background: linear-gradient(135deg, rgba(139,92,246,.45), rgba(34,211,238,.3));
+    border-color: rgba(139,92,246,.6); color: #ede9fe; }
+
 
   /* was an inline style= attribute (moved out for CSP) */
   .log-path { color: var(--muted); font-weight: 400; }

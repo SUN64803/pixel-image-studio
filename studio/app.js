@@ -286,18 +286,60 @@
   const BUSY_TEXT = "กำลังเปลี่ยนค่า กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น";
   let busyDepth = 0;
 
+  // The studio usually runs in an iframe inside the host shell. The host's
+  // overlay covers the whole window (including the host top bar), so ask it to
+  // show that instead of drawing a local overlay that leaves the bar clickable.
+  function hostShell() {
+    try {
+      if (
+        window.parent &&
+        window.parent !== window &&
+        window.parent.document.getElementById("blocking")
+      ) {
+        return window.parent;
+      }
+    } catch (e) {
+      /* cross-origin parent */
+    }
+    return null;
+  }
+
   function showBlocking(message) {
     const overlay = $("#busyOverlay");
-    if (!overlay) return;
     busyDepth += 1;
-    const text = $("#busyText");
-    if (text) text.textContent = tr(message || BUSY_TEXT);
-    overlay.classList.remove("hidden");
+    const text = tr(message || BUSY_TEXT);
+    const label = $("#busyText");
+    if (label) label.textContent = text;
+    const host = hostShell();
+    if (host) {
+      try {
+        host.postMessage(
+          { pixelsmithBusy: true, on: true, text },
+          window.location.origin
+        );
+      } catch (e) {
+        /* fall back to the local overlay */
+      }
+    }
+    if (!overlay) return;
+    if (host) overlay.classList.add("hidden");
+    else overlay.classList.remove("hidden");
   }
 
   function hideBlocking() {
     busyDepth = Math.max(0, busyDepth - 1);
     if (busyDepth > 0) return;
+    const host = hostShell();
+    if (host) {
+      try {
+        host.postMessage(
+          { pixelsmithBusy: true, on: false },
+          window.location.origin
+        );
+      } catch (e) {
+        /* nothing to do */
+      }
+    }
     const overlay = $("#busyOverlay");
     if (overlay) overlay.classList.add("hidden");
   }
