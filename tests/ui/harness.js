@@ -43,6 +43,7 @@ function summary() {
 function startServer(options = {}) {
   const modelLoadMs = options.modelLoadMs == null ? 1500 : options.modelLoadMs;
   const powerMs = options.powerMs == null ? 1200 : options.powerMs;
+  const backupMs = options.backupMs == null ? 300 : options.backupMs;
   let modelState = "not_loaded";
   let loadingUntil = 0;
 
@@ -89,6 +90,132 @@ function startServer(options = {}) {
         json(body);
       }
       return;
+    }
+    if (url === "/api/backup/export") {
+      setTimeout(
+        () =>
+          json({
+            ok: true,
+            path: "/tmp/ui-test-backup.zip",
+            size: 7340032,
+            files: 7,
+            created_at: "2026-11-12T00:00:00",
+          }),
+        backupMs
+      );
+      return;
+    }
+    if (url === "/api/backup/restore") {
+      setTimeout(
+        () =>
+          json({
+            ok: true,
+            restored: {
+              images: 2,
+              thumbs: 2,
+              train: 0,
+              history: 1,
+              presets: 1,
+              datasets: 1,
+              prompt_collection: 0,
+            },
+            manifest: { format: 1, app_version: "test" },
+          }),
+        backupMs
+      );
+      return;
+    }
+    if (url === "/api/loras") {
+      return json({
+        loras: [
+          {
+            id: "lora-test",
+            name: "Test LoRA",
+            family: "sana",
+            rank: 32,
+            path: "/tmp/test.safetensors",
+          },
+        ],
+        current: [],
+        family: "sana",
+      });
+    }
+    if (url === "/api/train/datasets") {
+      return json({
+        datasets: [
+          {
+            id: "ds-test",
+            name: "Test set",
+            trigger: "lola",
+            extra_triggers: ["armor form"],
+            kind: "style",
+            images: [
+              {
+                file: "a.png",
+                name: "a.png",
+                caption: "posing",
+                tags: ["front view"],
+                trigger: "armor form",
+                repeats: 3,
+                multi: false,
+              },
+            ],
+          },
+        ],
+        resolution_options: [512, 768, 1024],
+      });
+    }
+    if (url.startsWith("/api/train/datasets/") && url.includes("/qc")) {
+      return json({
+        ok: true,
+        dataset: {
+          id: "ds-test",
+          name: "Test set",
+          kind: "style",
+          trigger: "lola",
+          extra_triggers: ["armor form"],
+          count: 1,
+          solo: 1,
+          multi: 0,
+          missing_caption: 0,
+          small_images: 0,
+          extreme_aspect: 0,
+          duplicates: [],
+          buckets: { "1024×1024": 1 },
+          resolution: 1024,
+          recommendations: ["ข้อมูลพร้อมเทรน — ไม่พบปัญหาที่ต้องแก้ก่อน"],
+        },
+        images: [
+          {
+            file: "a.png",
+            name: "a.png",
+            width: 1024,
+            height: 1024,
+            aspect: 1,
+            bucket: "1024×1024",
+            bytes: 1024,
+            multi: false,
+            tags: ["front view"],
+            trigger: "armor form",
+            repeats: 3,
+            caption: "posing",
+            digest: "abc",
+            warnings: [],
+          },
+        ],
+      });
+    }
+    if (url.startsWith("/api/train/datasets/") && url.endsWith("/sample")) {
+      req.resume();
+      return json({ ok: true, job_id: "job-sample", job: { id: "job-sample", status: "queued" } });
+    }
+    if (url.startsWith("/api/train/datasets/") && req.method === "PUT") {
+      req.resume();
+      return json({ ok: true, dataset: { id: "ds-test" } });
+    }
+    if (url.startsWith("/api/train/datasets/") && req.method === "PATCH") {
+      req.resume();
+      return json({ ok: true, dataset: { id: "ds-test" } });
     }
     if (url.startsWith("/api/") || url.startsWith("/files/")) {
       return json({ detail: "ui-test stub" }, 404);

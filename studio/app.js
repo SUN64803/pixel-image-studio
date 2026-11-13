@@ -175,7 +175,7 @@
     const el = document.createElement("div");
     el.className = `toast ${kind}`;
     el.dataset.id = String(++toastSeq);
-    el.innerHTML = `<span>${esc(message)}</span>`;
+    el.innerHTML = `<span>${esc(tr(message))}</span>`;
     box.appendChild(el);
     setTimeout(() => {
       el.classList.add("out");
@@ -279,6 +279,260 @@
         event.preventDefault();
         first.focus();
       }
+    });
+  }
+
+  // ── in-app training manual (bilingual) ──────────────────────────────────
+  // The content lives in training-guide.js (Thai + English for every block).
+  // Rendering from data keeps the manual independent of the i18n dictionary
+  // and lets the language switch re-render the open modal instantly.
+  const GUIDE = window.TRAINING_GUIDE;
+  const guideState = { opener: null, section: "overview", search: "" };
+
+  function guideLang() {
+    return window.I18N ? I18N.getLang() : "th";
+  }
+
+  function guideUi() {
+    const lang = guideLang();
+    return (GUIDE && GUIDE.ui && (GUIDE.ui[lang] || GUIDE.ui.th)) || {};
+  }
+
+  function guideText(value) {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    return value[guideLang()] || value.th || value.en || "";
+  }
+
+  function guideBlockText(block) {
+    const parts = [];
+    if (block.p) parts.push(block.p.th, block.p.en);
+    if (block.list) block.list.forEach((item) => parts.push(item.th, item.en));
+    if (block.steps) block.steps.forEach((item) => parts.push(item.th, item.en));
+    if (block.note) parts.push(block.note.text.th, block.note.text.en);
+    if (block.code) parts.push(block.code);
+    if (block.table) {
+      block.table.head.forEach((cell) => parts.push(cell.th, cell.en));
+      block.table.rows.forEach((row) =>
+        row.forEach((cell) => parts.push(cell.th, cell.en))
+      );
+    }
+    return parts.join(" ");
+  }
+
+  function guideSectionMatches(section, query) {
+    if (!query) return true;
+    const haystack = [
+      section.title.th,
+      section.title.en,
+      ...section.blocks.map(guideBlockText),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  }
+
+  function renderGuideBlock(block) {
+    if (block.p) return `<p>${esc(guideText(block.p))}</p>`;
+    if (block.list) {
+      return `<ul>${block.list
+        .map((item) => `<li>${esc(guideText(item))}</li>`)
+        .join("")}</ul>`;
+    }
+    if (block.steps) {
+      return `<ol>${block.steps
+        .map((item) => `<li>${esc(guideText(item))}</li>`)
+        .join("")}</ol>`;
+    }
+    if (block.note) {
+      const tone = ["info", "warn", "ok"].includes(block.note.tone)
+        ? block.note.tone
+        : "info";
+      return `<div class="guide-note ${tone}">${esc(
+        guideText(block.note.text)
+      )}</div>`;
+    }
+    if (block.code) {
+      return `<pre class="guide-code">${esc(block.code)}</pre>`;
+    }
+    if (block.table) {
+      const head = block.table.head
+        .map((cell) => `<th>${esc(guideText(cell))}</th>`)
+        .join("");
+      const rows = block.table.rows
+        .map(
+          (row) =>
+            `<tr>${row
+              .map((cell) => `<td>${esc(guideText(cell))}</td>`)
+              .join("")}</tr>`
+        )
+        .join("");
+      return `<div class="guide-table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    return "";
+  }
+
+  function renderGuide(options = {}) {
+    if (!GUIDE || !Array.isArray(GUIDE.sections)) return;
+    const modal = $("#guideModal");
+    if (!modal) return;
+    const ui = guideUi();
+    const lang = guideLang();
+    const query = guideState.search.trim().toLowerCase();
+
+    const title = $("#guideTitle");
+    if (title) title.textContent = ui.title || "คู่มือการเทรน LoRA";
+    const sub = $("#guideSub");
+    if (sub) sub.textContent = ui.subtitle || "";
+    const foot = $("#guideFoot");
+    if (foot) foot.textContent = ui.footer || "";
+    const search = $("#guideSearch");
+    if (search) {
+      search.placeholder = ui.search || "";
+      if (document.activeElement !== search) search.value = guideState.search;
+    }
+    const toc = $("#guideToc");
+    if (toc) toc.setAttribute("aria-label", ui.contents || "สารบัญ");
+    const close = $("#guideClose");
+    if (close) close.setAttribute("aria-label", ui.close || "ปิด");
+
+    const visible = GUIDE.sections.filter((section) =>
+      guideSectionMatches(section, query)
+    );
+    if (
+      guideState.section &&
+      !visible.some((section) => section.id === guideState.section) &&
+      visible.length
+    ) {
+      guideState.section = visible[0].id;
+    }
+
+    if (toc) {
+      toc.innerHTML = visible.length
+        ? visible
+            .map(
+              (section) => `
+                <button type="button" class="guide-toc-item${
+                  section.id === guideState.section ? " active" : ""
+                }" data-guide-target="${esc(section.id)}">
+                  <span aria-hidden="true">${esc(section.icon || "•")}</span>
+                  <span>${esc(guideText(section.title))}</span>
+                </button>`
+            )
+            .join("")
+        : "";
+    }
+
+    const content = $("#guideContent");
+    if (content) {
+      content.innerHTML = visible.length
+        ? visible
+            .map(
+              (section) => `
+                <section class="guide-section" id="guide-sec-${esc(section.id)}">
+                  <h4><span aria-hidden="true">${esc(section.icon || "")}</span> ${esc(
+                guideText(section.title)
+              )}</h4>
+                  ${section.blocks.map(renderGuideBlock).join("")}
+                </section>`
+            )
+            .join("")
+        : `<p class="guide-empty">${esc(ui.noResults || "")}</p>`;
+      if (options.scrollTo) {
+        const target = content.querySelector(
+          `#guide-sec-${options.scrollTo}`
+        );
+        if (target) {
+          content.scrollTop = Math.max(0, target.offsetTop - 8);
+        }
+      }
+    }
+    // Language tag in the footer so it is obvious both are available.
+    if (foot && foot.textContent) {
+      foot.textContent = `${foot.textContent} · ${lang === "en" ? "EN" : "TH"}`;
+    }
+  }
+
+  function openGuide(sectionId) {
+    if (!GUIDE) return;
+    const modal = $("#guideModal");
+    if (!modal) return;
+    guideState.opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (sectionId) guideState.section = sectionId;
+    guideState.search = "";
+    modal.classList.remove("hidden");
+    renderGuide({ scrollTo: guideState.section });
+    const search = $("#guideSearch");
+    setTimeout(() => search && search.focus(), 0);
+  }
+
+  function closeGuide() {
+    const modal = $("#guideModal");
+    if (!modal || modal.classList.contains("hidden")) return;
+    modal.classList.add("hidden");
+    const opener = guideState.opener;
+    guideState.opener = null;
+    if (opener && document.body.contains(opener) && typeof opener.focus === "function") {
+      try {
+        opener.focus({ preventScroll: true });
+      } catch (e) {
+        try {
+          opener.focus();
+        } catch (e2) {
+          /* element gone */
+        }
+      }
+    }
+  }
+
+  function bindGuide() {
+    const modal = $("#guideModal");
+    if (!modal || !GUIDE) return;
+    $("#guideOpen")?.addEventListener("click", () => openGuide("overview"));
+    $("#guideOpenTop")?.addEventListener("click", () => openGuide("overview"));
+    $("#guideClose")?.addEventListener("click", closeGuide);
+    modal.addEventListener("click", (event) => {
+      if (event.target.closest("[data-guide-close]")) closeGuide();
+    });
+    $("#guideSearch")?.addEventListener("input", () => {
+      guideState.search = $("#guideSearch").value || "";
+      renderGuide();
+    });
+    $("#guideToc")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-guide-target]");
+      if (!button) return;
+      guideState.section = button.dataset.guideTarget;
+      renderGuide({ scrollTo: guideState.section });
+    });
+    // Keep the manual's keys away from app-level shortcuts; Escape closes.
+    modal.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeGuide();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusables = Array.from(
+        modal.querySelectorAll('button, input, [tabindex="0"]')
+      ).filter((el) => el.offsetParent !== null);
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+    // Re-render the open manual in the new language (content is data-driven).
+    document.addEventListener("langchange", () => {
+      if (!modal.classList.contains("hidden")) renderGuide();
     });
   }
 
@@ -822,6 +1076,7 @@
       renderLoras(Array.isArray(saved) ? saved : state.settings.loras || []);
       renderLoraManager();
       renderInitLoras();
+      renderSampleLoras();
     } catch (err) {
       console.warn("loras:", err);
     }
@@ -1017,6 +1272,59 @@
     if (prev && loras.some((l) => l.id === prev)) sel.value = prev;
   }
 
+  // Picker for the post-training sample button.
+  function renderSampleLoras() {
+    const sel = $("#sampleLora");
+    if (!sel) return;
+    const prev = sel.value;
+    const loras = (state.loras || [])
+      .slice()
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    sel.innerHTML =
+      '<option value="">— เลือก LoRA —</option>' +
+      loras
+        .map(
+          (l) =>
+            `<option value="${esc(l.id)}">${esc(l.name)}${
+              l.rank ? ` · r${l.rank}` : ""
+            }</option>`
+        )
+        .join("");
+    if (prev && loras.some((l) => l.id === prev)) sel.value = prev;
+  }
+
+  function renderDatasetQc(res) {
+    const box = $("#dsQcResult");
+    if (!box) return;
+    const ds = res.dataset || {};
+    const recs = (ds.recommendations || [])
+      .map((text) => `<li>${esc(text)}</li>`)
+      .join("");
+    const buckets = Object.entries(ds.buckets || {})
+      .map(([size, count]) => `<span class="qc-chip">${esc(size)} × ${count}</span>`)
+      .join(" ");
+    const rows = (res.images || [])
+      .filter((img) => (img.warnings || []).length)
+      .map(
+        (img) => `
+          <li><b>${esc(img.name)}</b> · ${img.width}×${img.height}
+            <span class="micro">(${esc(img.bucket)})</span>
+            <ul>${img.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+          </li>`
+      )
+      .join("");
+    box.innerHTML = `
+      <div class="qc-head">
+        <b>${esc(ds.name || "dataset")}</b>
+        <span class="micro">${ds.count} รูป · เดี่ยว ${ds.solo} · หลายตัว ${ds.multi}
+          · ไม่มี caption ${ds.missing_caption} · ไฟล์ซ้ำ ${(ds.duplicates || []).length} กลุ่ม</span>
+      </div>
+      <div class="qc-buckets">${buckets || '<span class="micro">ไม่มีข้อมูล bucket</span>'}</div>
+      <ul class="qc-recs">${recs}</ul>
+      ${rows ? `<details><summary>รูปที่มีคำเตือน</summary><ul class="qc-images">${rows}</ul></details>` : ""}
+    `;
+  }
+
   // ── LoRA trainer ────────────────────────────────────────────────────────
   function trainerModels() {
     return (state.registry || []).filter(
@@ -1110,6 +1418,80 @@
     ["low angle", /\b(low[- ]angle|looking up (at|from)|from below)\b/i],
   ];
 
+  const KIND_LABELS = {
+    character: "ตัวละคร",
+    style: "สไตล์ภาพ",
+    outfit: "ชุด/ของตกแต่ง",
+    pose: "ท่า/คอนเซปต์",
+  };
+
+  const KIND_HINTS = {
+    character:
+      "ตัวละคร: ควรมีรูปเดี่ยว ≥ 16 รูป หลายมุม และ caption บรรยายฉาก/ท่า/ชุด ไม่บรรยายลักษณะถาวร",
+    style:
+      "สไตล์ภาพ: ควรมี 20–30 รูปขึ้นไป หลากหลายเนื้อหา และ caption บรรยายเนื้อหา ไม่บรรยายสไตล์",
+    outfit:
+      "ชุด/ของตกแต่ง: 10–20 รูป เห็นชิ้นงานชัดทั้งระยะใกล้/ไกล และ caption บรรยายรายละเอียดที่คงที่",
+    pose:
+      "ท่า/คอนเซปต์: 20–40 รูป มุมกล้องหลากหลาย และ caption ระบุชื่อท่า/คอนเซปต์",
+  };
+
+  const KIND_TARGETS = { character: [16, 30], style: [20, 30], outfit: [10, 20], pose: [20, 40] };
+
+  const TRAIN_HINTS = {
+    character:
+      "💡 character: rank 32 · LR 1e-4 · 1024px · cosine · caption บรรยายฉาก/ท่า/ชุด ไม่บรรยายลักษณะถาวร",
+    style:
+      "💡 style: rank 32 · LR 1.5e-4 · 1024px · caption บรรยายเนื้อหาให้ละเอียด แต่ไม่บรรยายสไตล์",
+    outfit:
+      "💡 outfit: rank 16 · LR 1e-4 · 1024px · caption เน้นรายละเอียดชิ้นงานที่คงที่",
+    pose:
+      "💡 pose: rank 16–32 · LR 1e-4 · caption ระบุชื่อท่า/คอนเซปต์",
+  };
+
+  const TRAIN_PRESETS = {
+    character: {
+      rank: 32, steps: 1200, lr: 0.0001, resolution: 1024,
+      scheduler: "cosine", sampling: "logit_normal", saveEvery: 200,
+      multiMode: "exclude", ema: false, flip: false,
+      bucketing: true, captionDropout: 0.05, captionShuffle: false,
+      keepTokens: 1, noiseOffset: 0, minSnr: 0, rsLora: false, targetModules: "attn",
+    },
+    style: {
+      rank: 32, steps: 2000, lr: 0.00015, resolution: 1024,
+      scheduler: "cosine", sampling: "logit_normal", saveEvery: 250,
+      multiMode: "include", ema: false, flip: true,
+      bucketing: true, captionDropout: 0.05, captionShuffle: true,
+      keepTokens: 1, noiseOffset: 0.02, minSnr: 5, rsLora: false, targetModules: "attn",
+    },
+    outfit: {
+      rank: 16, steps: 900, lr: 0.0001, resolution: 1024,
+      scheduler: "cosine", sampling: "logit_normal", saveEvery: 150,
+      multiMode: "include", ema: false, flip: false,
+      bucketing: true, captionDropout: 0.05, captionShuffle: false,
+      keepTokens: 1, noiseOffset: 0, minSnr: 0, rsLora: false, targetModules: "attn",
+    },
+    fast: {
+      rank: 16, steps: 300, lr: 0.00015, resolution: 768,
+      scheduler: "constant", sampling: "logit_normal", saveEvery: 100,
+      multiMode: "include", ema: false, flip: false,
+      bucketing: true, captionDropout: 0.05, captionShuffle: false,
+      keepTokens: 1, noiseOffset: 0, minSnr: 0, rsLora: false, targetModules: "attn",
+    },
+  };
+
+  function trainerTriggers(ds) {
+    const out = [];
+    const push = (value) => {
+      const trigger = String(value || "").trim().toLowerCase();
+      if (trigger && !out.includes(trigger)) out.push(trigger);
+    };
+    push(ds.trigger);
+    (ds.extra_triggers || []).forEach(push);
+    (ds.images || []).forEach((img) => push(img.trigger));
+    return out;
+  }
+
   function looksMultiCaption(caption) {
     return MULTI_HINTS.test(String(caption || ""));
   }
@@ -1140,6 +1522,25 @@
     const box = $("#dsAudit");
     if (!box) return;
     const images = ds.images || [];
+    const kind = ds.kind || "character";
+    const [targetLow, targetHigh] = KIND_TARGETS[kind] || KIND_TARGETS.character;
+    const low = images.length < targetLow;
+    const tagged = images.filter(
+      (img) => (img.tags || []).length || String(img.caption || "").trim()
+    ).length;
+
+    if (kind !== "character") {
+      box.innerHTML = `
+        <div class="audit-pills">
+          <span class="audit-pill">ทั้งหมด <b>${images.length}</b></span>
+          <span class="audit-pill ${low ? "warn" : "ok"}">เป้าหมาย <b>${targetLow}–${targetHigh}</b></span>
+          <span class="audit-pill ${tagged === images.length && images.length ? "ok" : ""}">มี caption/tag <b>${tagged}/${images.length}</b></span>
+        </div>
+        <span class="micro">${KIND_HINTS[kind] || KIND_HINTS.character}</span>
+      `;
+      return;
+    }
+
     const soloImages = images.filter((img) => !img.multi);
     const solo = soloImages.length;
     const multi = images.length - solo;
@@ -1157,6 +1558,7 @@
         <span class="audit-pill ok">เดี่ยว <b>${solo}</b></span>
         <span class="audit-pill ${multi ? "warn" : ""}">หลายตัวละคร <b>${multi}</b></span>
         <span class="audit-pill ${noAngle ? "warn" : "ok"}">tag มุม (เดี่ยว) <b>${noAngle}</b></span>
+        <span class="audit-pill ${low ? "warn" : "ok"}">เป้าหมาย <b>${targetLow}–${targetHigh}</b></span>
       </div>
       ${
         likely
@@ -1173,7 +1575,7 @@
           ? `<span class="micro warn">อีก ${manual} รูปเดี่ยว caption ไม่ได้บอกมุม — เติมเองจากแถบ tag ด้านล่าง</span>`
           : ""
       }
-      <span class="micro">ค่าเริ่มต้นเทรนเฉพาะรูป “เดี่ยว” — รูปหลายตัวละครจะถูกข้ามเพื่อไม่ให้ trigger จำตัวละครประกอบ · ถ้าเลือกโหมดลดน้ำหนัก ควรใส่ caption เช่น “with another character” ให้รูปเหล่านั้นด้วย</span>
+      <span class="micro">${KIND_HINTS.character}</span>
     `;
   }
 
@@ -1198,41 +1600,80 @@
     $("#trainerNewBox").classList.toggle("hidden", !!ds);
     if (!ds) return;
     $("#dsTitle").textContent = ds.name + (ds.trigger ? ` · trigger: ${ds.trigger}` : "");
-    $("#dsMeta").textContent = ds.kind === "style" ? "สไตล์ภาพ" : "ตัวละคร/วัตถุ";
+    $("#dsMeta").textContent = KIND_LABELS[ds.kind] || ds.kind || "ตัวละคร";
+    const kindSel = $("#dsKindEdit");
+    if (kindSel && document.activeElement !== kindSel) {
+      kindSel.value = ds.kind || "character";
+    }
     const triggerInput = $("#dsTriggerEdit");
     if (triggerInput && document.activeElement !== triggerInput) {
       triggerInput.value = ds.trigger || "";
     }
+    const extraInput = $("#dsExtraTriggers");
+    if (extraInput && document.activeElement !== extraInput) {
+      extraInput.value = (ds.extra_triggers || []).join(", ");
+    }
+    const hint = $("#trainHint");
+    if (hint) hint.textContent = TRAIN_HINTS[ds.kind] || TRAIN_HINTS.character;
+    const triggers = trainerTriggers(ds);
     const list = $("#captionList");
     list.innerHTML = (ds.images || [])
-      .map(
-        (img) => `<div class="caption-row" data-file="${esc(img.file)}">
+      .map((img) => {
+        const options = [
+          `<option value="">— ใช้ trigger หลัก —</option>`,
+          ...triggers.map(
+            (t) =>
+              `<option value="${esc(t)}"${(img.trigger || "") === t ? " selected" : ""}>${esc(t)}</option>`
+          ),
+        ].join("");
+        return `<div class="caption-row" data-file="${esc(img.file)}">
           <img class="caption-thumb" loading="lazy" src="/files/train/${esc(ds.id)}/${esc(img.file)}" alt="">
           <div class="caption-main">
             <textarea class="caption-input" rows="2" maxlength="600"
               placeholder="caption — trigger word ถูกเติมให้อัตโนมัติ">${esc(img.caption || "")}</textarea>
+            <div class="caption-extra">
+              <select class="caption-trigger" title="trigger ของรูปนี้">${options}</select>
+              <input class="caption-tags" type="text" maxlength="240"
+                placeholder="tags (คั่นด้วย ,)" value="${esc((img.tags || []).join(", "))}">
+              <span class="caption-repeats-label">×</span>
+              <input class="caption-repeats" type="number" min="1" max="10" step="1"
+                value="${Number(img.repeats) || 1}" title="จำนวนรอบต่อ epoch">
+            </div>
             <span class="q-sub">${esc(img.name || img.file)}</span>
           </div>
-          <label class="caption-role" title="รูปนี้มีตัวละครอื่นอยู่ในภาพหรือไม่">
+          <label class="caption-role" title="รูปนี้มีตัวละครอื่นอยู่ในภาพหรือไม่" style="${ds.kind === "character" ? "" : "display:none"}">
             <select class="caption-multi">
               <option value="solo"${img.multi ? "" : " selected"}>เดี่ยว</option>
               <option value="multi"${img.multi ? " selected" : ""}>หลายตัวละคร</option>
             </select>
           </label>
           <button type="button" class="ghost-btn danger-hover caption-del" title="ลบรูปนี้">✕</button>
-        </div>`
-      )
+        </div>`;
+      })
       .join("");
     renderAudit(ds);
+    updateCalcSteps();
   }
 
   function collectCaptions() {
     const ds = activeDataset();
     if (!ds) return [];
+    const isCharacter = (ds.kind || "character") === "character";
     return $$("#captionList .caption-row").map((row) => ({
       file: row.dataset.file,
       caption: row.querySelector(".caption-input").value.trim(),
-      multi: row.querySelector(".caption-multi").value === "multi",
+      // Non-character datasets hide the selector; omitting the field keeps
+      // the stored flag intact if the user switches the kind back later.
+      ...(isCharacter
+        ? { multi: row.querySelector(".caption-multi").value === "multi" }
+        : {}),
+      tags: row
+        .querySelector(".caption-tags")
+        .value.split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+      trigger: row.querySelector(".caption-trigger").value,
+      repeats: Number(row.querySelector(".caption-repeats").value) || 1,
     }));
   }
 
@@ -1248,6 +1689,199 @@
       await refreshTrainer();
     } catch (err) {
       toast(err.message, "err", 6000);
+    }
+  }
+
+  function clampNumber(value, min, max, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function updateCalcSteps() {
+    const label = $("#calcSteps");
+    if (!label) return 0;
+    const rows = $$("#captionList .caption-row");
+    const totalRepeats = rows.length
+      ? rows.reduce(
+          (sum, row) =>
+            sum + clampNumber(row.querySelector(".caption-repeats")?.value, 1, 10, 1),
+          0
+        )
+      : (activeDataset()?.images || []).reduce(
+          (sum, img) => sum + clampNumber(img.repeats, 1, 10, 1),
+          0
+        );
+    const epochs = clampNumber($("#calcEpochs")?.value, 1, 100, 10);
+    const accum = clampNumber($("#calcAccum")?.value, 1, 8, 1);
+    const steps = Math.max(1, Math.round((totalRepeats * epochs) / accum));
+    label.textContent = `≈ ${steps.toLocaleString()} steps · ${totalRepeats} samples/epoch`;
+    return steps;
+  }
+
+  function applyTrainPreset(name) {
+    const preset = TRAIN_PRESETS[name];
+    if (!preset) return;
+    const model = currentTrainerModel();
+    const isSdxl = model && model.family === "sdxl";
+    const resolution = isSdxl ? Math.min(preset.resolution, 768) : preset.resolution;
+    const steps = isSdxl ? Math.round(preset.steps * 1.5) : preset.steps;
+    if ($("#trainRank")) $("#trainRank").value = String(preset.rank);
+    if ($("#trainSteps")) $("#trainSteps").value = String(steps);
+    if ($("#trainLr")) $("#trainLr").value = String(preset.lr);
+    if ($("#trainRes")) $("#trainRes").value = String(resolution);
+    if ($("#trainScheduler")) $("#trainScheduler").value = preset.scheduler;
+    if ($("#trainSampling")) $("#trainSampling").value = preset.sampling;
+    if ($("#trainSaveEvery")) $("#trainSaveEvery").value = String(preset.saveEvery);
+    if ($("#trainMultiMode")) $("#trainMultiMode").value = preset.multiMode;
+    if ($("#trainMultiWeight")) {
+      $("#trainMultiWeight").disabled = preset.multiMode !== "weighted";
+    }
+    if ($("#trainEma")) $("#trainEma").checked = preset.ema;
+    if ($("#trainFlip")) $("#trainFlip").checked = preset.flip;
+    if ($("#trainBucketing")) $("#trainBucketing").checked = !!preset.bucketing;
+    if ($("#trainCaptionDropout")) {
+      $("#trainCaptionDropout").value = String(preset.captionDropout ?? 0.05);
+    }
+    if ($("#trainCaptionShuffle")) {
+      $("#trainCaptionShuffle").checked = !!preset.captionShuffle;
+    }
+    if ($("#trainKeepTokens")) $("#trainKeepTokens").value = String(preset.keepTokens ?? 1);
+    if ($("#trainNoiseOffset")) $("#trainNoiseOffset").value = String(preset.noiseOffset ?? 0);
+    if ($("#trainMinSnr")) $("#trainMinSnr").value = String(preset.minSnr ?? 0);
+    if ($("#trainRsLora")) $("#trainRsLora").checked = !!preset.rsLora;
+    if ($("#trainTargetModules")) {
+      $("#trainTargetModules").value = preset.targetModules || "attn";
+    }
+    updateCalcSteps();
+    toast(
+      `ใช้ preset ${name} แล้ว${isSdxl ? " (ปรับเป็น SDXL 768px)" : ""}`,
+      "ok"
+    );
+  }
+
+  function readTrainConfig() {
+    return {
+      format: "pixelsmith-train-config",
+      version: 1,
+      kind: activeDataset()?.kind || "character",
+      rank: Number($("#trainRank")?.value) || 32,
+      steps: Number($("#trainSteps")?.value) || 1500,
+      lr: Number($("#trainLr")?.value) || 0.0002,
+      resolution: Number($("#trainRes")?.value) || 1024,
+      seed: Number($("#trainSeed")?.value ?? -1),
+      scheduler: $("#trainScheduler")?.value || "cosine",
+      timestep_sampling: $("#trainSampling")?.value || "logit_normal",
+      save_every: Number($("#trainSaveEvery")?.value) || 0,
+      grad_accum: Number($("#trainGradAccum")?.value) || 1,
+      multi_mode: $("#trainMultiMode")?.value || "exclude",
+      multi_weight: (Number($("#trainMultiWeight")?.value) || 25) / 100,
+      ema: !!$("#trainEma")?.checked,
+      augment_flip: !!$("#trainFlip")?.checked,
+      bucketing: $("#trainBucketing") ? !!$("#trainBucketing").checked : true,
+      caption_dropout: Number($("#trainCaptionDropout")?.value ?? 0.05),
+      caption_shuffle: !!$("#trainCaptionShuffle")?.checked,
+      keep_tokens: Number($("#trainKeepTokens")?.value ?? 1),
+      noise_offset: Number($("#trainNoiseOffset")?.value ?? 0),
+      min_snr_gamma: Number($("#trainMinSnr")?.value ?? 0),
+      use_rslora: !!$("#trainRsLora")?.checked,
+      target_modules: $("#trainTargetModules")?.value || "attn",
+    };
+  }
+
+  function applyTrainConfig(cfg) {
+    if (!cfg || cfg.format !== "pixelsmith-train-config") {
+      throw new Error("ไฟล์ config ไม่ถูกต้อง");
+    }
+    const setSelect = (selector, value) => {
+      const el = $(selector);
+      if (el && Array.from(el.options).some((opt) => opt.value === String(value))) {
+        el.value = String(value);
+      }
+    };
+    const rankOptions = Array.from($("#trainRank")?.options || []).map((o) => Number(o.value));
+    const rank = clampNumber(cfg.rank, 4, 128, 32);
+    if (rankOptions.includes(rank) && $("#trainRank")) {
+      $("#trainRank").value = String(rank);
+    }
+    const resOptions = Array.from($("#trainRes")?.options || []).map((o) => Number(o.value));
+    const resolution = clampNumber(cfg.resolution, 512, 1024, 1024);
+    if ($("#trainRes")) {
+      $("#trainRes").value = String(
+        resOptions.includes(resolution) ? resolution : resOptions.includes(768) ? 768 : 1024
+      );
+    }
+    if ($("#trainSteps")) {
+      $("#trainSteps").value = String(clampNumber(cfg.steps, 10, 20000, 1500));
+    }
+    if ($("#trainLr")) {
+      $("#trainLr").value = String(clampNumber(cfg.lr, 0.00001, 0.0005, 0.0002));
+    }
+    if ($("#trainSeed")) {
+      $("#trainSeed").value = String(clampNumber(cfg.seed, -1, 2147483647, -1));
+    }
+    setSelect("#trainScheduler", cfg.scheduler || "cosine");
+    setSelect("#trainSampling", cfg.timestep_sampling || "logit_normal");
+    if ($("#trainSaveEvery")) {
+      $("#trainSaveEvery").value = String(clampNumber(cfg.save_every, 0, 20000, 0));
+    }
+    if ($("#trainGradAccum")) {
+      $("#trainGradAccum").value = String(clampNumber(cfg.grad_accum, 1, 8, 1));
+    }
+    setSelect("#trainMultiMode", cfg.multi_mode || "exclude");
+    if ($("#trainMultiWeight")) {
+      $("#trainMultiWeight").value = String(
+        Math.round(clampNumber(cfg.multi_weight, 0.05, 1, 0.25) * 100)
+      );
+      $("#trainMultiWeight").disabled = $("#trainMultiMode")?.value !== "weighted";
+    }
+    if ($("#trainEma")) $("#trainEma").checked = !!cfg.ema;
+    if ($("#trainFlip")) $("#trainFlip").checked = !!cfg.augment_flip;
+    if ($("#trainBucketing")) $("#trainBucketing").checked = cfg.bucketing !== false;
+    if ($("#trainCaptionDropout")) {
+      $("#trainCaptionDropout").value = String(
+        clampNumber(cfg.caption_dropout, 0, 0.3, 0.05)
+      );
+    }
+    if ($("#trainCaptionShuffle")) {
+      $("#trainCaptionShuffle").checked = !!cfg.caption_shuffle;
+    }
+    if ($("#trainKeepTokens")) {
+      $("#trainKeepTokens").value = String(clampNumber(cfg.keep_tokens, 0, 4, 1));
+    }
+    if ($("#trainNoiseOffset")) {
+      $("#trainNoiseOffset").value = String(clampNumber(cfg.noise_offset, 0, 0.2, 0));
+    }
+    if ($("#trainMinSnr")) {
+      $("#trainMinSnr").value = String(clampNumber(cfg.min_snr_gamma, 0, 20, 0));
+    }
+    if ($("#trainRsLora")) $("#trainRsLora").checked = !!cfg.use_rslora;
+    setSelect("#trainTargetModules", cfg.target_modules || "attn");
+    updateCalcSteps();
+  }
+
+  function exportTrainConfig() {
+    const cfg = readTrainConfig();
+    const blob = new Blob([JSON.stringify(cfg, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `pixelsmith-train-${cfg.kind}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("ส่งออก config แล้ว", "ok");
+  }
+
+  async function importTrainConfig(file) {
+    try {
+      applyTrainConfig(JSON.parse(await file.text()));
+      toast("นำเข้า config แล้ว", "ok");
+    } catch (err) {
+      toast(`นำเข้า config ไม่สำเร็จ: ${err.message}`, "err", 6000);
     }
   }
 
@@ -1416,6 +2050,62 @@
         btn.disabled = false;
         btn.textContent = "เปิดใช้งานโหมดพลังงาน";
       }
+    }
+  }
+
+  // ── backup / restore ────────────────────────────────────────────────────
+  function mbLabel(bytes) {
+    const mb = (Number(bytes) || 0) / 1048576;
+    return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+  }
+
+  async function exportBackup() {
+    const btn = $("#backupExport");
+    if (btn) btn.disabled = true;
+    showBlocking("กำลังสำรองข้อมูล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
+    try {
+      const res = await api("/api/backup/export", { method: "POST" });
+      const state = $("#backupState");
+      if (state) state.textContent = `${res.files} ไฟล์ · ${mbLabel(res.size)}`;
+      toast(`สำรองข้อมูลแล้ว: ${res.files} ไฟล์ · ${mbLabel(res.size)}`, "ok", 8000);
+    } catch (err) {
+      toast(err.message, "err", 7000);
+    } finally {
+      hideBlocking();
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function importBackup(file) {
+    if (!file) return;
+    const ok = await uiConfirm(
+      tr("กู้คืนข้อมูลจากไฟล์สำรอง? ข้อมูลที่มีอยู่จะไม่ถูกลบ — ระบบจะเพิ่มเฉพาะรายการที่ยังไม่มี"),
+      { title: "กู้คืนจาก ZIP", confirmLabel: "กู้คืน", cancelLabel: "ยกเลิก", danger: false }
+    );
+    if (!ok) return;
+    const btn = $("#backupImport");
+    if (btn) btn.disabled = true;
+    showBlocking("กำลังกู้คืนข้อมูล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น");
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name || "backup.zip");
+      const res = await api("/api/backup/restore", { method: "POST", body: form });
+      const r = res.restored || {};
+      const total = Object.values(r).reduce((sum, n) => sum + (Number(n) || 0), 0);
+      const reload = await uiConfirm(
+        tr(
+          `กู้คืนแล้ว ${total} รายการ (ประวัติ ${r.history || 0} · ภาพ ${r.images || 0} · presets ${r.presets || 0} · dataset ${r.datasets || 0}) — โหลดหน้าใหม่เพื่อเห็นข้อมูลทั้งหมด?`
+        ),
+        { title: "กู้คืนสำเร็จ", confirmLabel: "โหลดใหม่", cancelLabel: "ไว้ก่อน", danger: false }
+      );
+      if (reload) location.reload();
+    } catch (err) {
+      toast(err.message, "err", 9000);
+    } finally {
+      hideBlocking();
+      if (btn) btn.disabled = false;
+      const input = $("#backupFile");
+      if (input) input.value = "";
     }
   }
 
@@ -2741,6 +3431,7 @@
   // ── wiring ──────────────────────────────────────────────────────────────
   function wire() {
     bindConfirmDialog();
+    bindGuide();
     // Safety net for Chromium's occasional lost caret after a native window
     // dialog (file picker, message box): rebuild the caret on the focused
     // editable element when the window regains focus.
@@ -2787,6 +3478,17 @@
     });
     if ($("#powerSetup")) {
       $("#powerSetup").addEventListener("click", setupPower);
+    }
+
+    if ($("#backupExport")) {
+      $("#backupExport").addEventListener("click", exportBackup);
+    }
+    if ($("#backupImport") && $("#backupFile")) {
+      $("#backupImport").addEventListener("click", () => $("#backupFile").click());
+      $("#backupFile").addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        importBackup(file);
+      });
     }
 
     if ($("#assistantToggle")) {
@@ -2988,7 +3690,7 @@
             body: JSON.stringify({
               name,
               trigger: $("#dsTrigger").value.trim(),
-              kind: "character",
+              kind: $("#dsKind") ? $("#dsKind").value : "character",
             }),
           });
           state.activeDs = res.dataset.id;
@@ -3216,10 +3918,20 @@
         try {
           await api(`/api/train/datasets/${ds.id}`, {
             method: "PATCH",
-            body: JSON.stringify({ trigger: $("#dsTriggerEdit").value.trim() }),
+            body: JSON.stringify({
+              trigger: $("#dsTriggerEdit").value.trim(),
+              kind: $("#dsKindEdit") ? $("#dsKindEdit").value : ds.kind,
+              extra_triggers: $("#dsExtraTriggers")
+                ? $("#dsExtraTriggers").value
+                : [],
+            }),
           });
           await refreshTrainer();
-          toast("บันทึก trigger แล้ว — caption ที่ไม่มี trigger จะถูกเติมอัตโนมัติตอนเทรน", "ok", 4200);
+          toast(
+            "บันทึกประเภท/trigger แล้ว — caption ที่ไม่มี trigger จะถูกเติมอัตโนมัติตอนเทรน",
+            "ok",
+            4200
+          );
         } catch (err) {
           toast(err.message, "err", 5000);
         }
@@ -3237,6 +3949,53 @@
           toast(err.message, "err", 5000);
         }
       });
+      if ($("#trainPresetApply")) {
+        $("#trainPresetApply").addEventListener("click", () => {
+          const name = $("#trainPreset").value;
+          if (!name) {
+            toast("เลือก preset ก่อน", "warn");
+            return;
+          }
+          applyTrainPreset(name);
+        });
+      }
+      if ($("#trainCfgExport")) {
+        $("#trainCfgExport").addEventListener("click", exportTrainConfig);
+      }
+      if ($("#trainCfgImport") && $("#trainCfgFile")) {
+        $("#trainCfgImport").addEventListener("click", () =>
+          $("#trainCfgFile").click()
+        );
+        $("#trainCfgFile").addEventListener("change", async () => {
+          const input = $("#trainCfgFile");
+          const file = input.files && input.files[0];
+          input.value = "";
+          if (file) await importTrainConfig(file);
+        });
+      }
+      ["#calcEpochs", "#calcAccum"].forEach((selector) => {
+        if ($(selector)) $(selector).addEventListener("input", updateCalcSteps);
+      });
+      if ($("#calcApply")) {
+        $("#calcApply").addEventListener("click", () => {
+          const steps = updateCalcSteps();
+          if ($("#trainSteps")) $("#trainSteps").value = String(steps);
+          toast(`ตั้ง steps = ${steps.toLocaleString()} แล้ว`, "ok");
+        });
+      }
+      if ($("#captionList")) {
+        $("#captionList").addEventListener("input", (event) => {
+          if (event.target.classList.contains("caption-repeats")) updateCalcSteps();
+        });
+      }
+      if ($("#dsKind")) {
+        $("#dsKind").addEventListener("change", () => {
+          const hint = $("#dsKindHint");
+          if (hint) {
+            hint.textContent = KIND_HINTS[$("#dsKind").value] || KIND_HINTS.character;
+          }
+        });
+      }
       $("#trainStart").addEventListener("click", async () => {
         const ds = activeDataset();
         if (!ds) return;
@@ -3247,6 +4006,12 @@
           return;
         }
         try {
+          // Persist on-screen caption/tags/repeats first so the engine trains
+          // on exactly what the user sees (repeats live in the dataset).
+          await api(`/api/train/datasets/${ds.id}/captions`, {
+            method: "PUT",
+            body: JSON.stringify({ updates: collectCaptions() }),
+          });
           const res = await api(`/api/train/datasets/${ds.id}/train`, {
             method: "POST",
             body: JSON.stringify({
@@ -3267,6 +4032,15 @@
               grad_accum: $("#trainGradAccum") ? Number($("#trainGradAccum").value) || 1 : 1,
               multi_mode: $("#trainMultiMode") ? $("#trainMultiMode").value : "exclude",
               multi_weight: ($("#trainMultiWeight") ? Number($("#trainMultiWeight").value) || 25 : 25) / 100,
+              bucketing: $("#trainBucketing") ? $("#trainBucketing").checked : true,
+              caption_dropout: $("#trainCaptionDropout") ? Number($("#trainCaptionDropout").value) || 0 : 0.05,
+              caption_shuffle: $("#trainCaptionShuffle") ? $("#trainCaptionShuffle").checked : false,
+              keep_tokens: $("#trainKeepTokens") ? Number($("#trainKeepTokens").value) || 0 : 1,
+              noise_offset: $("#trainNoiseOffset") ? Number($("#trainNoiseOffset").value) || 0 : 0,
+              min_snr_gamma: $("#trainMinSnr") ? Number($("#trainMinSnr").value) || 0 : 0,
+              use_rslora: $("#trainRsLora") ? $("#trainRsLora").checked : false,
+              target_modules: $("#trainTargetModules") ? $("#trainTargetModules").value : "attn",
+              resume_state: $("#trainResumeState") ? $("#trainResumeState").checked : false,
               thermal_guard: $("#trainThermalGuard") ? $("#trainThermalGuard").checked : true,
               thermal_mode: $("#trainThermalMode") ? $("#trainThermalMode").value : "throttle",
               thermal_throttle_c: $("#trainThermalThrottle") ? Number($("#trainThermalThrottle").value) || 87 : 87,
@@ -3283,6 +4057,60 @@
           toast(err.message, "err", 7000);
         }
       });
+      $("#dsQcRun").addEventListener("click", async () => {
+        const ds = activeDataset();
+        if (!ds) return;
+        const box = $("#dsQcResult");
+        const note = $("#dsQcNote");
+        if (box) {
+          box.classList.remove("hidden");
+          box.textContent = "กำลังตรวจ dataset…";
+        }
+        try {
+          const res = await api(
+            `/api/train/datasets/${ds.id}/qc?resolution=${
+              Number($("#trainRes")?.value) || 1024
+            }`
+          );
+          renderDatasetQc(res);
+          if (note) note.textContent = "ตรวจล่าสุด: " + (res.dataset?.count || 0) + " รูป";
+        } catch (err) {
+          if (box) box.textContent = err.message;
+          toast(err.message, "err", 7000);
+        }
+      });
+      if ($("#sampleRun")) {
+        $("#sampleRun").addEventListener("click", async () => {
+          const ds = activeDataset();
+          const loraId = $("#sampleLora") ? $("#sampleLora").value : "";
+          if (!ds) {
+            toast("เลือกชุดเทรนก่อน", "warn");
+            return;
+          }
+          if (!loraId) {
+            toast("เลือก LoRA ที่จะทดสอบก่อน", "warn");
+            return;
+          }
+          try {
+            const res = await api(`/api/train/datasets/${ds.id}/sample`, {
+              method: "POST",
+              body: JSON.stringify({
+                lora_id: loraId,
+                model_id: (currentTrainerModel() || {}).id || "",
+                prompt: $("#samplePrompt") ? $("#samplePrompt").value : "",
+                batch: 4,
+                seed: 12345,
+              }),
+            });
+            state.knownActive.add(res.job_id);
+            startQueuePolling();
+            await tickQueue();
+            toast("สร้างภาพทดสอบเข้าคิวแล้ว", "ok");
+          } catch (err) {
+            toast(err.message, "err", 7000);
+          }
+        });
+      }
       $("#trainerModel").addEventListener("change", () => {
         const m = currentTrainerModel();
         updateTrainerModelNote();

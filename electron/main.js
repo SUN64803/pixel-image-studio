@@ -53,6 +53,11 @@ let engineOwned = false;
 let quitting = false;
 let powerResetStarted = false;
 let downloadHookInstalled = false;
+// engine crash recovery: an unintentional exit triggers a bounded auto-restart
+let engineStopping = false;       // set while we stop the engine on purpose
+let engineRestartTimer = null;
+let engineRestartAttempts = 0;
+const MAX_ENGINE_RESTARTS = 3;
 
 // Stable WM class so Linux panels/taskbars use the program's icon + name.
 app.commandLine.appendSwitch("class", "pixelsmith-image");
@@ -144,6 +149,7 @@ function startEngineProcess() {
     return { ok: false, reason: "missing-venv", py };
   }
   try {
+    engineStopping = false;
     fs.mkdirSync(DATA, { recursive: true });
     rotateLog(LOG_FILE);
     const out = fs.openSync(LOG_FILE, "a");
@@ -162,12 +168,17 @@ function startEngineProcess() {
       stdio: ["ignore", out, out],
       windowsHide: true,
     });
-    engineProc.on("error", (err) => {
+    const proc = engineProc;
+    proc.on("error", (err) => {
       console.error("[engine] spawn failed:", err);
     });
-    engineProc.on("exit", (code, signal) => {
+    proc.on("exit", (code, signal) => {
       if (!quitting) console.log(`[engine] exited code=${code} signal=${signal}`);
-      engineProc = null;
+      if (engineProc === proc) engineProc = null;
+      if (quitting || engineStopping) return;
+      // A newer engine replaced this one on purpose — do not restart.
+      if (engineProc && engineProc !== proc) return;
+      scheduleEngineRestart(code, signal);
     });
     engineOwned = true;
     return { ok: true, proc: engineProc };
@@ -199,8 +210,79 @@ async function ensureEngine() {
   return waitForEngine(started.proc);
 }
 
+// ── engine crash recovery ───────────────────────────────────────────────────
+// If the engine dies without being asked to (OOM, a crash in torch, the user
+// killing it), restart it a few times with a growing delay and tell the host
+// page what is happening. After MAX_ENGINE_RESTARTS the banner stays up with a
+// manual "ลองใหม่" button (the menu has the same action).
+function notifyEngineStatus(payload) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.webContents.send("engine-status", payload);
+  } catch (e) {
+    /* window is going away */
+  }
+}
+
+function scheduleEngineRestart(code, signal) {
+  if (quitting || engineStopping || engineRestartTimer) return;
+  if (engineRestartAttempts >= MAX_ENGINE_RESTARTS) {
+    notifyEngineStatus({
+      state: "failed",
+      attempts: engineRestartAttempts,
+      message: "engine หยุดทำงานและเริ่มใหม่ไม่สำเร็จ",
+    });
+    return;
+  }
+  const attempt = ++engineRestartAttempts;
+  const delay = Math.min(8000, 1000 * attempt);
+  notifyEngineStatus({
+    state: "restarting",
+    attempt,
+    max: MAX_ENGINE_RESTARTS,
+    code,
+    signal,
+  });
+  engineRestartTimer = setTimeout(async () => {
+    engineRestartTimer = null;
+    if (quitting || engineStopping) return;
+    // Someone may already have an engine on the port (e.g. started by hand).
+    if (await ping()) {
+      engineRestartAttempts = 0;
+      notifyEngineStatus({ state: "recovered", reused: true });
+      return;
+    }
+    const started = startEngineProcess();
+    if (!started.ok) {
+      notifyEngineStatus({ state: "failed", message: "เริ่ม engine ไม่ได้" });
+      return;
+    }
+    const result = await waitForEngine(started.proc, 60000);
+    if (quitting || engineStopping) return;
+    if (result.ok) {
+      engineRestartAttempts = 0;
+      notifyEngineStatus({ state: "recovered" });
+      // If the window is still on the loading/error page, load the real UI;
+      // a page that is already open reconnects on its own.
+      if (win && !win.isDestroyed()) {
+        let url = "";
+        try { url = win.webContents.getURL(); } catch (e) { /* gone */ }
+        if (!url.startsWith(BASE_URL)) await launch();
+      }
+    } else {
+      scheduleEngineRestart(null, null);
+    }
+  }, delay);
+  if (engineRestartTimer.unref) engineRestartTimer.unref();
+}
+
 function stopEngine() {
+  if (engineRestartTimer) {
+    clearTimeout(engineRestartTimer);
+    engineRestartTimer = null;
+  }
   if (!engineProc) return;
+  engineStopping = true;
   const proc = engineProc;
   engineProc = null;
   try {
@@ -602,6 +684,7 @@ async function launch() {
 async function restartEngine() {
   if (engineStarting) return;
   engineStarting = true;
+  engineRestartAttempts = 0;
   try {
     stopEngine();
     await sleep(600);
@@ -827,6 +910,7 @@ ipcMain.handle("app-info", () => ({
   data: DATA,
   engine: BASE_URL,
 }));
+ipcMain.handle("restart-engine", () => restartEngine());
 
 // ── lifecycle ───────────────────────────────────────────────────────────────
 if (!app.requestSingleInstanceLock()) {

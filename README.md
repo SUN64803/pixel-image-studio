@@ -62,10 +62,16 @@ window. The interface is available in **English and Thai**.
   assistant model in the drawer; the choice is remembered.
 - **LoRA manager** — import LoRAs from other folders, remove them, inspect size
   and family.
+- **Backup & restore** — export history, images, thumbnails, prompt presets and
+  training datasets as one ZIP under **Settings → Backup**; restore merges the
+  archive into your current data and never overwrites existing files. Models and
+  LoRAs are not included (they stay in `models/`).
 - **Live progress** — polling updates, cancellable jobs, VRAM display.
 - **Metadata** — generated PNGs embed prompt/seed/size/steps plus a WebP
   thumbnail.
-- **Host page** — load/unload the model, open folders, and inspect logs.
+- **Host page** — load/unload the model, open folders, and inspect logs. If the
+  engine ever stops unexpectedly, the app restarts it automatically (up to 3
+  attempts) and shows the reason in a banner with a retry button.
 
 ## Requirements
 
@@ -82,12 +88,12 @@ window. The interface is available in **English and Thai**.
 
 ### AppImage (recommended for new machines)
 
-Download `PixelSmith-Image-Studio-1.5.1-x86_64.AppImage` from the
+Download `PixelSmith-Image-Studio-1.5.2-x86_64.AppImage` from the
 [Releases](../../releases) page and make it executable:
 
 ```bash
-chmod +x PixelSmith-Image-Studio-1.5.1-x86_64.AppImage
-./PixelSmith-Image-Studio-1.5.1-x86_64.AppImage
+chmod +x PixelSmith-Image-Studio-1.5.2-x86_64.AppImage
+./PixelSmith-Image-Studio-1.5.2-x86_64.AppImage
 ```
 
 On first launch the app **installs everything automatically** and shows
@@ -211,9 +217,20 @@ engine/.venv/bin/python engine/server.py   # headless engine for debugging
 3. Write captions (the trigger word is added automatically) and mark images as
    solo or multi-character.
 4. Set the LoRA name, rank, steps, LR and resolution, then start. Training
-   joins the same queue as generation.
-5. The output file appears in the LoRA list with its family tag (SANA/SDXL)
-   and is ready to use.
+   joins the same queue as generation. Use the **preset** buttons and the
+   **steps calculator** (repeats × epochs ÷ grad accumulation) to get sane
+   defaults quickly.
+5. Run **dataset QC** first to catch duplicates, tiny images, extreme aspect
+   ratios and missing captions. Aspect-ratio bucketing is on by default, so
+   portrait/landscape images are no longer square-cropped.
+6. The output file appears in the LoRA list with its family tag (SANA/SDXL)
+   and is ready to use. Use **Generate test images** to compare checkpoints
+   with a fixed seed.
+
+A full Thai manual covering every training option (what it does, trade-offs
+and recommended values) is in [`docs/TRAINING-GUIDE.md`](docs/TRAINING-GUIDE.md).
+The same content is built into the app: **Train LoRA → 📘 Training manual**
+(Thai/English, with a table of contents and search).
 
 **SANA** uses flow-matching on a transformer (fast). Defaults: 1024px,
 rank 32, LR 2e-4, 1500 steps.
@@ -367,6 +384,8 @@ image-studio/
 | GET | `/api/log?tail=200` | recent log |
 | GET | `/api/train/datasets` | datasets + captions/audit |
 | POST | `/api/train/datasets` | create dataset (`{name, trigger, kind}`) |
+| GET | `/api/train/datasets/{id}/qc` | dataset quality report (`resolution`) |
+| POST | `/api/train/datasets/{id}/sample` | queue sample generation with a trained LoRA |
 | POST | `/api/train/datasets/{id}/train` | queue LoRA training (`model_id` selects SANA/SDXL) |
 | GET | `/api/presets` | list prompt presets |
 | POST | `/api/presets` | create a preset |
@@ -382,9 +401,10 @@ image-studio/
 engine/.venv/bin/python -m pytest tests
 ```
 
-179 tests (a few seconds) covering model/LoRA discovery, family detection,
+248 tests (a few seconds) covering model/LoRA discovery, family detection,
 regional/hires logic, SANA/SDXL trainers (sanitize, save format, resume,
-thermal, multi-character), assistant tools, prompt presets, and the full API
+bucketing, caption variants, noise offset/min-SNR, rsLoRA, thermal,
+multi-character), dataset QC, assistant tools, prompt presets, and the full API
 (validation, queue ordering/move/cancel/limits). Tests stub `generate` so no
 real model is loaded and use a temporary data directory.
 
@@ -399,6 +419,20 @@ It is downloading ~9 GB once. Check `data/engine.log` or `/api/log`.
 - CPU offload is already enabled; if it is still not enough, press **Free VRAM**
   and retry.
 - 2048px needs a lot of VRAM and is not recommended on 10 GB cards.
+
+**GPU disappears / "GPU has fallen off the bus" (Xid 79)**
+- `dmesg` shows `NVRM: Xid (PCI:...) 79, GPU has fallen off the bus`, then
+  `nvidia-smi` stops working and (on a multi-GPU desktop) the screen dies.
+- This is a **PCIe link/hardware** event, not out-of-memory and not a broken
+  driver install. **Reboot to recover.**
+- `apt-get purge '*nvidia*'` does **not** fix it: the driver is a `.run` + DKMS
+  build, so dpkg cannot see or remove it. Purging only removes kernel
+  meta/firmware packages, and the following reboot is what actually helps.
+- Lower the power limit (Settings → GPU power mode → Low temp), and consider
+  keeping the GPU off the X server. Run `bash scripts/gpu-status.sh` (read-only)
+  to check the driver, PCIe link, Xid 79 in the current boot, and apt pins.
+- Full Thai write-up with the evidence timeline and mitigation commands:
+  [`docs/GPU-XID79.md`](docs/GPU-XID79.md).
 
 **Generation is slow**
 - SANA is fast at low step counts (8–20); raise steps only when needed.

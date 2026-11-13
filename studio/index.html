@@ -240,6 +240,11 @@
       <div class="pane" data-pane="train">
         <details class="field details" id="trainerBox" open>
           <summary class="label">LoRA Trainer <span class="micro-inline">(เทรนเอง · SANA / SDXL)</span></summary>
+          <div class="trainer-tools guide-bar">
+            <button type="button" class="ghost-btn" id="guideOpenTop"
+                    title="เปิดคู่มือการเทรน (ไทย/อังกฤษ)">📘 คู่มือการเทรน</button>
+            <span class="micro">อธิบายทุกค่า: ทำอะไร · ผลกระทบ · ค่าแนะนำ</span>
+          </div>
           <div class="field">
             <label class="mini-field">โมเดลฐานสำหรับเทรน
               <select id="trainerModel"><option value="">— ใช้โมเดลที่เลือกอยู่ —</option></select>
@@ -260,18 +265,40 @@
                 <input type="text" id="dsTrigger" maxlength="40" placeholder="เช่น foxy">
               </label>
             </div>
+            <label class="mini-field">ประเภทคอนเซปต์
+              <select id="dsKind">
+                <option value="character" selected>ตัวละคร (character)</option>
+                <option value="style">สไตล์ภาพ (style)</option>
+                <option value="outfit">ชุด/ของตกแต่ง (outfit/object)</option>
+                <option value="pose">ท่า/คอนเซปต์ (pose/concept)</option>
+              </select>
+            </label>
+            <p class="micro" id="dsKindHint">ตัวละคร: ต้องมีรูปเดี่ยวหลายมุม · สไตล์: เน้นความหลากหลายของเนื้อหา · ชุด/ของ: เห็นชิ้นงานชัด · ท่า: มุมกล้องหลากหลาย</p>
             <button type="button" class="primary" id="dsCreate">สร้าง dataset</button>
           </div>
           <div id="trainerActive" class="hidden">
             <div class="trainer-head-row">
               <b id="dsTitle">—</b>
               <span class="hint" id="dsMeta"></span>
+              <button type="button" class="ghost-btn guide-open" id="guideOpen"
+                      title="เปิดคู่มือการเทรน (ไทย/อังกฤษ)">📘 คู่มือการเทรน</button>
             </div>
             <div class="trainer-tools">
-              <label class="mini-field grow">Trigger word (แก้ได้)
+              <label class="mini-field">ประเภท
+                <select id="dsKindEdit">
+                  <option value="character">ตัวละคร (character)</option>
+                  <option value="style">สไตล์ภาพ (style)</option>
+                  <option value="outfit">ชุด/ของตกแต่ง (outfit/object)</option>
+                  <option value="pose">ท่า/คอนเซปต์ (pose/concept)</option>
+                </select>
+              </label>
+              <label class="mini-field grow">Trigger หลัก
                 <input type="text" id="dsTriggerEdit" maxlength="40" placeholder="เช่น mytrigger7">
               </label>
-              <button type="button" class="ghost-btn" id="dsTriggerSave">บันทึก trigger</button>
+              <label class="mini-field grow">Trigger เสริม (คั่นด้วย ,)
+                <input type="text" id="dsExtraTriggers" maxlength="240" placeholder="เช่น armor form, casual outfit">
+              </label>
+              <button type="button" class="ghost-btn" id="dsTriggerSave">บันทึก</button>
             </div>
             <div class="trainer-tools">
               <label class="mini-field grow">นำเข้ารูป (เลือกได้หลายใบ)
@@ -280,6 +307,11 @@
               <button type="button" class="ghost-btn danger-hover" id="dsDelete" title="ลบ dataset นี้">ลบชุดนี้</button>
             </div>
             <div class="ds-audit" id="dsAudit"></div>
+            <div class="trainer-tools">
+              <button type="button" class="ghost-btn" id="dsQcRun">ตรวจคุณภาพ dataset (QC)</button>
+              <span class="micro" id="dsQcNote">ตรวจขนาด/สัดส่วน/ไฟล์ซ้ำ/แคปชัน ก่อนเทรน</span>
+            </div>
+            <div class="ds-qc hidden" id="dsQcResult"></div>
             <div class="caption-tagbar" id="captionTagbar">
               <span class="tagbar-label">แทรก tag มุม/ท่า:</span>
               <button type="button" class="tag-btn" data-tag="front view">front view</button>
@@ -302,6 +334,31 @@
             </div>
             <div class="caption-list" id="captionList"></div>
             <button type="button" class="ghost-btn" id="captionsSave">บันทึก caption &amp; ประเภท</button>
+            <div class="trainer-tools">
+              <label class="mini-field">Preset
+                <select id="trainPreset">
+                  <option value="">— เลือก preset —</option>
+                  <option value="character">Character</option>
+                  <option value="style">Style</option>
+                  <option value="outfit">Outfit / object</option>
+                  <option value="fast">Fast test</option>
+                </select>
+              </label>
+              <button type="button" class="ghost-btn" id="trainPresetApply">ใช้ preset</button>
+              <button type="button" class="ghost-btn" id="trainCfgExport">ส่งออก config</button>
+              <button type="button" class="ghost-btn" id="trainCfgImport">นำเข้า config</button>
+              <input type="file" id="trainCfgFile" accept="application/json,.json" hidden>
+            </div>
+            <div class="trainer-tools">
+              <label class="mini-field">Epochs
+                <input type="number" id="calcEpochs" min="1" max="100" step="1" value="10">
+              </label>
+              <label class="mini-field">Grad accum
+                <input type="number" id="calcAccum" min="1" max="8" step="1" value="1">
+              </label>
+              <span class="micro" id="calcSteps">≈ 0 steps</span>
+              <button type="button" class="ghost-btn" id="calcApply">ใช้ค่านี้</button>
+            </div>
             <div class="trainer-params grid2">
               <label class="mini-field">ชื่อ LoRA ผลลัพธ์
                 <input type="text" id="loraNameOut" maxlength="60" placeholder="my-character">
@@ -373,6 +430,24 @@
                 <label class="mini-field">น้ำหนักรูปหลายตัวละคร (%)
                   <input type="number" id="trainMultiWeight" min="5" max="100" step="5" value="25" disabled>
                 </label>
+                <label class="mini-field">Caption dropout
+                  <input type="number" id="trainCaptionDropout" min="0" max="0.3" step="0.01" value="0.05">
+                </label>
+                <label class="mini-field">Keep tokens (คำแรกที่ไม่สลับ)
+                  <input type="number" id="trainKeepTokens" min="0" max="4" step="1" value="1">
+                </label>
+                <label class="mini-field">Noise offset
+                  <input type="number" id="trainNoiseOffset" min="0" max="0.2" step="0.01" value="0">
+                </label>
+                <label class="mini-field">Min-SNR gamma (0 = ปิด)
+                  <input type="number" id="trainMinSnr" min="0" max="20" step="0.5" value="0">
+                </label>
+                <label class="mini-field">Target modules
+                  <select id="trainTargetModules">
+                    <option value="attn" selected>Attention เท่านั้น (เบา)</option>
+                    <option value="attn_ff">Attention + Feed-forward (จำรายละเอียดเก่งขึ้น)</option>
+                  </select>
+                </label>
                 <label class="mini-field">โหมดระบายความร้อน
                   <select id="trainThermalMode">
                     <option value="throttle" selected>ชะลอ GPU (แนะนำ)</option>
@@ -407,11 +482,41 @@
                 <span class="track"><span class="thumb"></span></span>
                 <span class="switch-text">Thermal guard <span class="micro-inline">(ชะลอ GPU อัตโนมัติเมื่อร้อนเกิน — หยุดเฉพาะกรณีฉุกเฉิน)</span></span>
               </label>
+              <label class="switch">
+                <input type="checkbox" id="trainBucketing" checked>
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">Aspect-ratio bucketing <span class="micro-inline">(เก็บภาพแนวตั้ง/แนวนอนโดยไม่ครอปเป็นจัตุรัส — แนะนำเปิด)</span></span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="trainCaptionShuffle">
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">สลับลำดับคำใน caption <span class="micro-inline">(กันโมเดลยึดลำดับคำ — ช่วยให้เข้าใจแท็กแยกกัน)</span></span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="trainRsLora">
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">rsLoRA <span class="micro-inline">(scale alpha/√rank — rank สูงเรียนได้เสถียรขึ้น)</span></span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="trainResumeState">
+                <span class="track"><span class="thumb"></span></span>
+                <span class="switch-text">Resume จาก optimizer state <span class="micro-inline">(เทรนต่อจาก checkpoint พร้อมสถานะ optimizer — ต้องมีไฟล์ .trainstate.pt)</span></span>
+              </label>
               <p class="micro">Cosine + EMA + logit-normal ให้ผลดีขึ้นในจำนวน step ที่น้อยลง · checkpoint ช่วยเลือก step ที่ดีที่สุด · grad accumulation &gt;1 จะช้าลงตามจำนวนเท่า · โหมดชะลอจะลด clock ลงทีละ 5% สูงสุด 25% เมื่อถึง 87°C และกลับมาเร็วขึ้นเมื่อเย็นถึง 80°C (ถ้าไม่มีสิทธิ์ sudo จะหน่วงระหว่าง step แทน)</p>
             </details>
             <button type="button" class="primary" id="trainStart">🚀 เริ่มเทรน (เข้าคิว)</button>
             <p class="micro">เทรน = ปล่อยโมเดล generate ก่อนเสมอ — งานอื่นในคิวจะรอจนเทรนจบ · caption ว่าง = ใช้ trigger word · ผลลัพธ์โผล่ในหน้า LoRA ทันที</p>
-            <p class="micro">💡 ค่าแนะนำ character LoRA: rank 32 · steps 3000–4000 · LR 0.00015 · 1024px · cosine + EMA · ใช้ trigger ที่ไม่ซ้ำ (เช่น mytrigger7) และให้ caption บรรยายฉาก/ท่า/ชุดที่ต่างกัน โดยไม่บรรยายลักษณะตัวละครที่เหมือนกันทุกภาพ</p>
+            <div class="trainer-tools">
+              <label class="mini-field grow">ทดสอบ LoRA ที่เพิ่งเทรน
+                <select id="sampleLora"><option value="">— เลือก LoRA —</option></select>
+              </label>
+              <label class="mini-field grow">พรอมป์ตตัวอย่าง
+                <input type="text" id="samplePrompt" maxlength="400" placeholder="เว้นว่าง = ใช้ trigger ของ dataset">
+              </label>
+              <button type="button" class="ghost-btn" id="sampleRun">สร้างภาพทดสอบ (4 ใบ)</button>
+            </div>
+            <p class="micro">สร้างภาพตัวอย่างด้วย LoRA ที่เลือก (seed คงที่ ใช้เทียบผลระหว่าง step/ค่า setting) — เข้าคิวปกติ ไม่โหลดโมเดลซ้ำ</p>
+            <p class="micro" id="trainHint">💡 ค่าแนะนำ character LoRA: rank 32 · steps 3000–4000 · LR 0.00015 · 1024px · cosine + EMA · ใช้ trigger ที่ไม่ซ้ำ (เช่น mytrigger7) และให้ caption บรรยายฉาก/ท่า/ชุดที่ต่างกัน โดยไม่บรรยายลักษณะตัวละครที่เหมือนกันทุกภาพ</p>
           </div>
         </details>
       </div>
@@ -455,6 +560,19 @@
             <span class="label">ที่เก็บไฟล์</span>
           </div>
           <p class="micro">โมเดล: models/ · LoRA: models/loras/ · ภาพ: data/images/ · dataset: data/train/</p>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <span class="label">สำรองข้อมูล</span>
+            <span class="hint" id="backupState">…</span>
+          </div>
+          <div class="backup-actions">
+            <button type="button" class="ghost-btn" id="backupExport">สำรองข้อมูล (ZIP)</button>
+            <button type="button" class="ghost-btn" id="backupImport">กู้คืนจาก ZIP</button>
+            <input type="file" id="backupFile" accept=".zip,application/zip" hidden>
+          </div>
+          <p class="micro">รวมประวัติ ภาพ thumbnails presets และ dataset — ไม่รวมโมเดล/LoRA ใน models/</p>
         </div>
 
         <div class="field">
@@ -614,6 +732,25 @@
   </div>
 </div>
 
+<!-- in-app training manual (bilingual, rendered by training-guide.js) -->
+<div class="modal hidden" id="guideModal" role="dialog" aria-modal="true"
+     aria-labelledby="guideTitle">
+  <div class="modal-backdrop" data-guide-close="1"></div>
+  <div class="modal-card guide-card">
+    <button type="button" class="modal-x" id="guideClose" aria-label="ปิดคู่มือ">✕</button>
+    <header class="guide-head">
+      <h3 id="guideTitle">คู่มือการเทรน LoRA</h3>
+      <p class="micro" id="guideSub"></p>
+      <input type="search" id="guideSearch" autocomplete="off">
+    </header>
+    <div class="guide-body">
+      <nav class="guide-toc" id="guideToc" aria-label="สารบัญ"></nav>
+      <div class="guide-content" id="guideContent" tabindex="0"></div>
+    </div>
+    <footer class="guide-foot micro" id="guideFoot"></footer>
+  </div>
+</div>
+
 <!-- blocking status for slow operations (power mode, model load, …) -->
 <div class="busy-overlay hidden" id="busyOverlay" role="alert" aria-live="assertive">
   <div class="busy-box">
@@ -624,6 +761,7 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="i18n.js"></script>
+<script src="training-guide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

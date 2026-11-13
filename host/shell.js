@@ -9,6 +9,9 @@
   const vram = $("#vram");
   const banner = $("#banner");
   const bannerText = $("#bannerText");
+  const bannerAction = $("#bannerAction");
+  let bannerActionState = null;
+  let bannerSeq = 0;
   const loadBtn = $("#loadModel");
   const unloadBtn = $("#unloadModel");
 
@@ -55,9 +58,15 @@
     updateBlocking();
   });
 
-  function showBanner(message) {
-    if (!message) { banner.classList.remove("show"); return; }
+  function showBanner(message, action) {
+    bannerSeq += 1;
+    if (!message) { banner.classList.remove("show"); bannerActionState = null; return; }
     bannerText.textContent = message;
+    bannerActionState = action && typeof action.run === "function" ? action : null;
+    if (bannerAction) {
+      bannerAction.hidden = !bannerActionState;
+      bannerAction.textContent = bannerActionState ? bannerActionState.label || "ลองใหม่" : "";
+    }
     banner.classList.add("show");
   }
 
@@ -158,6 +167,43 @@
   frame.addEventListener("load", () => connecting.classList.add("hide"));
 
   $("#bannerClose").addEventListener("click", () => showBanner(""));
+  if (bannerAction) {
+    bannerAction.addEventListener("click", () => {
+      const action = bannerActionState;
+      if (action) action.run();
+    });
+  }
+
+  // ── engine crash recovery banner (main process → host) ──────────────────
+  // The supervisor auto-restarts a crashed engine; these messages keep the
+  // user informed and offer a manual retry after the last attempt fails.
+  if (window.pixelApp && typeof pixelApp.onEngineStatus === "function") {
+    pixelApp.onEngineStatus((s) => {
+      if (!s || !s.state) return;
+      if (s.state === "restarting") {
+        showBanner(
+          `engine หยุดทำงาน — กำลังเริ่มใหม่ (ครั้งที่ ${s.attempt || 1}/${s.max || 3})…`
+        );
+      } else if (s.state === "recovered") {
+        showBanner("engine กลับมาทำงานแล้ว");
+        const seq = bannerSeq;
+        setTimeout(() => {
+          if (seq === bannerSeq) showBanner("");
+        }, 6000);
+      } else if (s.state === "failed") {
+        showBanner(
+          `engine หยุดทำงาน: ${s.message || "ไม่ทราบสาเหตุ"} — ดู log หรือลองเริ่มใหม่`,
+          {
+            label: "ลองใหม่",
+            run: () => {
+              showBanner("กำลังเริ่ม engine ใหม่…");
+              if (window.pixelApp) pixelApp.restartEngine();
+            },
+          }
+        );
+      }
+    });
+  }
 
   const logModal = $("#logModal");
   async function loadLog() {

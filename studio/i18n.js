@@ -116,6 +116,54 @@
     "Trigger word (แก้ได้)": "Trigger word (editable)",
     "เช่น mytrigger7": "e.g. mytrigger7",
     "บันทึก trigger": "Save trigger",
+    "ประเภทคอนเซปต์": "Concept type",
+    "ตัวละคร (character)": "Character",
+    "สไตล์ภาพ (style)": "Style",
+    "ชุด/ของตกแต่ง (outfit/object)": "Outfit / object",
+    "ท่า/คอนเซปต์ (pose/concept)": "Pose / concept",
+    "ตัวละคร: ต้องมีรูปเดี่ยวหลายมุม · สไตล์: เน้นความหลากหลายของเนื้อหา · ชุด/ของ: เห็นชิ้นงานชัด · ท่า: มุมกล้องหลากหลาย":
+      "Character: solo images from several angles · Style: varied subject matter · Outfit/object: the item is clearly visible · Pose: varied camera angles",
+    "ประเภท": "Type",
+    "Trigger หลัก": "Main trigger",
+    "Trigger เสริม (คั่นด้วย ,)": "Extra triggers (comma-separated)",
+    "เช่น armor form, casual outfit": "e.g. armor form, casual outfit",
+    "บันทึก": "Save",
+    "— เลือก preset —": "— Select a preset —",
+    "ใช้ preset": "Apply preset",
+    "ส่งออก config": "Export config",
+    "นำเข้า config": "Import config",
+    "ใช้ค่านี้": "Use this value",
+    "เลือก preset ก่อน": "Select a preset first",
+    "ส่งออก config แล้ว": "Config exported",
+    "นำเข้า config แล้ว": "Config imported",
+    "บันทึกประเภท/trigger แล้ว — caption ที่ไม่มี trigger จะถูกเติมอัตโนมัติตอนเทรน":
+      "Type/trigger saved — captions without the trigger get it prepended automatically during training",
+    "ตัวละคร": "Character",
+    "สไตล์ภาพ": "Style",
+    "ชุด/ของตกแต่ง": "Outfit / object",
+    "ท่า/คอนเซปต์": "Pose / concept",
+    "tags (คั่นด้วย ,)": "tags (comma-separated)",
+    "— ใช้ trigger หลัก —": "— Use main trigger —",
+    "จำนวนรอบต่อ epoch": "Repeats per epoch",
+    "trigger ของรูปนี้": "Trigger for this image",
+    "เป้าหมาย": "Target",
+    "มี caption/tag": "with caption/tags",
+    "ตัวละคร: ควรมีรูปเดี่ยว ≥ 16 รูป หลายมุม และ caption บรรยายฉาก/ท่า/ชุด ไม่บรรยายลักษณะถาวร":
+      "Character: aim for ≥16 solo images from several angles; captions describe scene/pose/outfit, not permanent traits",
+    "สไตล์ภาพ: ควรมี 20–30 รูปขึ้นไป หลากหลายเนื้อหา และ caption บรรยายเนื้อหา ไม่บรรยายสไตล์":
+      "Style: aim for 20–30+ images with varied subject matter; captions describe the content, never the style",
+    "ชุด/ของตกแต่ง: 10–20 รูป เห็นชิ้นงานชัดทั้งระยะใกล้/ไกล และ caption บรรยายรายละเอียดที่คงที่":
+      "Outfit/object: 10–20 images with the item clearly visible near and far; captions describe its fixed details",
+    "ท่า/คอนเซปต์: 20–40 รูป มุมกล้องหลากหลาย และ caption ระบุชื่อท่า/คอนเซปต์":
+      "Pose/concept: 20–40 images from varied camera angles; captions name the pose/concept",
+    "💡 character: rank 32 · LR 1e-4 · 1024px · cosine · caption บรรยายฉาก/ท่า/ชุด ไม่บรรยายลักษณะถาวร":
+      "💡 Character: rank 32 · LR 1e-4 · 1024px · cosine · captions describe scene/pose/outfit, never permanent traits",
+    "💡 style: rank 32 · LR 1.5e-4 · 1024px · caption บรรยายเนื้อหาให้ละเอียด แต่ไม่บรรยายสไตล์":
+      "💡 Style: rank 32 · LR 1.5e-4 · 1024px · captions describe the content in detail, never the style",
+    "💡 outfit: rank 16 · LR 1e-4 · 1024px · caption เน้นรายละเอียดชิ้นงานที่คงที่":
+      "💡 Outfit: rank 16 · LR 1e-4 · 1024px · captions focus on the item's fixed details",
+    "💡 pose: rank 16–32 · LR 1e-4 · caption ระบุชื่อท่า/คอนเซปต์":
+      "💡 Pose: rank 16–32 · LR 1e-4 · captions name the pose/concept",
     "นำเข้ารูป (เลือกได้หลายใบ)": "Import images (multiple allowed)",
     "ลบ dataset นี้": "Delete this dataset",
     "แทรก tag มุม/ท่า:": "Insert angle/pose tag:",
@@ -150,6 +198,45 @@
       "(auto-throttle when hot — pauses only in emergencies)",
     "Cosine + EMA + logit-normal ให้ผลดีขึ้นในจำนวน step ที่น้อยลง · checkpoint ช่วยเลือก step ที่ดีที่สุด · grad accumulation >1 จะช้าลงตามจำนวนเท่า · โหมดชะลอจะลด clock ลงทีละ 5% สูงสุด 25% เมื่อถึง 87°C และกลับมาเร็วขึ้นเมื่อเย็นถึง 80°C (ถ้าไม่มีสิทธิ์ sudo จะหน่วงระหว่าง step แทน)":
       "Cosine + EMA + logit-normal give better results in fewer steps · checkpoints help pick the best step · grad accumulation >1 slows each step proportionally · throttle mode lowers the clock 5% per level (max 25%) at 87°C and speeds back up at 80°C (without sudo it sleeps between steps instead)",
+    "ตรวจคุณภาพ dataset (QC)": "Check dataset quality (QC)",
+    "📘 คู่มือการเทรน": "📘 Training manual",
+    "คู่มือการเทรน LoRA": "LoRA training manual",
+    "ปิดคู่มือ": "Close manual",
+    "สารบัญ": "Contents",
+    "เปิดคู่มือการเทรน (ไทย/อังกฤษ)": "Open the training manual (Thai/English)",
+    "อธิบายทุกค่า: ทำอะไร · ผลกระทบ · ค่าแนะนำ":
+      "Every option explained: what it does · effect · recommended values",
+    "ตรวจขนาด/สัดส่วน/ไฟล์ซ้ำ/แคปชัน ก่อนเทรน":
+      "Check size/aspect/duplicates/captions before training",
+    "Keep tokens (คำแรกที่ไม่สลับ)": "Keep tokens (first segments never shuffled)",
+    "Min-SNR gamma (0 = ปิด)": "Min-SNR gamma (0 = off)",
+    "Attention เท่านั้น (เบา)": "Attention only (light)",
+    "Attention + Feed-forward (จำรายละเอียดเก่งขึ้น)":
+      "Attention + feed-forward (better detail recall)",
+    "Aspect-ratio bucketing": "Aspect-ratio bucketing",
+    "(เก็บภาพแนวตั้ง/แนวนอนโดยไม่ครอปเป็นจัตุรัส — แนะนำเปิด)":
+      "(keeps portrait/landscape images instead of square-cropping — recommended)",
+    "สลับลำดับคำใน caption": "Shuffle caption word order",
+    "(กันโมเดลยึดลำดับคำ — ช่วยให้เข้าใจแท็กแยกกัน)":
+      "(stops the model relying on word order — helps it learn tags separately)",
+    "(scale alpha/√rank — rank สูงเรียนได้เสถียรขึ้น)":
+      "(scales alpha/√rank — higher ranks train more stably)",
+    "Resume จาก optimizer state": "Resume from optimizer state",
+    "(เทรนต่อจาก checkpoint พร้อมสถานะ optimizer — ต้องมีไฟล์ .trainstate.pt)":
+      "(continue a checkpoint with optimizer state — needs a .trainstate.pt file)",
+    "ทดสอบ LoRA ที่เพิ่งเทรน": "Test the freshly trained LoRA",
+    "พรอมป์ตตัวอย่าง": "Sample prompt",
+    "เว้นว่าง = ใช้ trigger ของ dataset": "Empty = use the dataset trigger",
+    "สร้างภาพทดสอบ (4 ใบ)": "Generate test images (4)",
+    "สร้างภาพตัวอย่างด้วย LoRA ที่เลือก (seed คงที่ ใช้เทียบผลระหว่าง step/ค่า setting) — เข้าคิวปกติ ไม่โหลดโมเดลซ้ำ":
+      "Generate samples with the selected LoRA (fixed seed, useful for comparing steps/settings) — queued like a normal job, no extra model load",
+    "— เลือก LoRA —": "— Select a LoRA —",
+    "กำลังตรวจ dataset…": "Checking dataset…",
+    "เลือก LoRA ที่จะทดสอบก่อน": "Select a LoRA to test first",
+    "เลือกชุดเทรนก่อน": "Select a dataset first",
+    "สร้างภาพทดสอบเข้าคิวแล้ว": "Test generation queued",
+    "รูปที่มีคำเตือน": "Images with warnings",
+    "ไม่มีข้อมูล bucket": "No bucket data",
     "🚀 เริ่มเทรน (เข้าคิว)": "🚀 Start training (queue)",
     "เทรน = ปล่อยโมเดล generate ก่อนเสมอ — งานอื่นในคิวจะรอจนเทรนจบ · caption ว่าง = ใช้ trigger word · ผลลัพธ์โผล่ในหน้า LoRA ทันที":
       "Training always frees the generation model first — other queued jobs wait until it finishes · empty caption = use the trigger word · the result appears in the LoRA list right away",
@@ -313,7 +400,6 @@
     "เดี่ยว": "Solo",
     "หลายตัวละคร": "Multi-char",
     "tag มุม (เดี่ยว)": "Angle tags (solo)",
-    "สไตล์ภาพ": "Image style",
     "ตัวละคร/วัตถุ": "Character/object",
     "caption — trigger word ถูกเติมให้อัตโนมัติ":
       "caption — trigger word is added automatically",
@@ -673,10 +759,34 @@
     "กำลังคืนหน่วยความจำโมเดล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
       "Freeing model memory. Please don't switch windows or do anything else.",
     "กำลังเปิดใช้งาน…": "Enabling…",
+
+    // backup / restore
+    "สำรองข้อมูล": "Backup",
+    "สำรองข้อมูล (ZIP)": "Back up (ZIP)",
+    "กู้คืนจาก ZIP": "Restore from ZIP",
+    "รวมประวัติ ภาพ thumbnails presets และ dataset — ไม่รวมโมเดล/LoRA ใน models/":
+      "Includes history, images, thumbnails, presets and datasets — models/LoRAs in models/ are not included",
+    "กำลังสำรองข้อมูล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Backing up. Please don't switch windows or do anything else.",
+    "กำลังกู้คืนข้อมูล กรุณาอย่าสลับหน้าต่างหรือทำอย่างอื่น":
+      "Restoring data. Please don't switch windows or do anything else.",
+    "กู้คืนข้อมูลจากไฟล์สำรอง? ข้อมูลที่มีอยู่จะไม่ถูกลบ — ระบบจะเพิ่มเฉพาะรายการที่ยังไม่มี":
+      "Restore from this backup? Existing data is kept — only missing items are added",
+    "กู้คืน": "Restore",
+    "กู้คืนสำเร็จ": "Restore complete",
+    "โหลดใหม่": "Reload",
+    "ไว้ก่อน": "Not now",
+
+    // host banner · engine crash recovery
+    "engine กลับมาทำงานแล้ว": "Engine is back online",
+    "กำลังเริ่ม engine ใหม่…": "Starting the engine again…",
+    "ลองใหม่": "Retry",
   };
 
   // ── dynamic messages: regex on the normalized Thai text ───────────────────
   const PATTERNS = [
+    [/^ใช้ preset (.+) แล้ว(.*)$/, (m) => `Applied ${m[1]} preset${m[2] || ""}`],
+    [/^ตั้ง steps = ([\d,]+) แล้ว$/, (m) => `Steps set to ${m[1]}`],
     [/^เปลี่ยนโหมดพลังงานเป็น (.+) \((\d+) W\) แล้ว$/,
       (m) => `Power mode set to ${m[1]} (${m[2]} W)`],
     [/^ไม่รู้จักโหมด: (.+)$/, (m) => `Unknown mode: ${m[1]}`],
@@ -921,6 +1031,19 @@
       (m) => `Brain: local LLM (nothing leaves the machine) — understands commands more flexibly. Examples:${m[1].split("\n").map((l) => translateOne(l) ?? l).join("\n")}`],
     [/^สมอง: กฎ \(rule-based\) — เข้าใจคำสั่งตามตัวอย่างนี้:([\s\S]+)$/,
       (m) => `Brain: rules (rule-based) — it understands commands like these examples:${m[1].split("\n").map((l) => translateOne(l) ?? l).join("\n")}`],
+
+    // backup / restore summaries
+    [/^สำรองข้อมูลแล้ว: (\d+) ไฟล์ · (.+)$/,
+      (m) => `Backup saved: ${m[1]} files · ${m[2]}`],
+    [/^กู้คืนแล้ว (\d+) รายการ \(ประวัติ (\d+) · ภาพ (\d+) · presets (\d+) · dataset (\d+)\) — โหลดหน้าใหม่เพื่อเห็นข้อมูลทั้งหมด\?$/,
+      (m) => `Restored ${m[1]} items (history ${m[2]} · images ${m[3]} · presets ${m[4]} · datasets ${m[5]}) — reload the page to see everything?`],
+    [/^(\d+) ไฟล์ · (.+)$/, (m) => `${m[1]} files · ${m[2]}`],
+
+    // host banner · engine crash recovery
+    [/^engine หยุดทำงาน — กำลังเริ่มใหม่ \(ครั้งที่ (\d+)\/(\d+)\)…$/,
+      (m) => `Engine stopped — restarting (attempt ${m[1]}/${m[2]})…`],
+    [/^engine หยุดทำงาน: (.+) — ดู log หรือลองเริ่มใหม่$/,
+      (m) => `Engine stopped: ${m[1]} — check the log or try again`],
   ].filter((p) => p && p[0] instanceof RegExp && typeof p[1] === "function");
 
   // Composed toasts/errors: "ไทย prefix: rest" — translate prefix + recurse.
@@ -937,7 +1060,7 @@
     "ใช้ tag ไม่สำเร็จ": "Couldn't apply tags",
     "ทำไม่ได้": "Couldn't do it",
     "ยกเลิกไม่สำเร็จ": "Couldn't cancel",
-    "Undo ไม่สำเร็จ": "Undo failed",
+    "นำเข้า config ไม่สำเร็จ": "Couldn't import config",    "Undo ไม่สำเร็จ": "Undo failed",
     "เชื่อมต่อผู้ช่วยไม่ได้": "Assistant unreachable",
     "สแกนโมเดลไม่ได้": "Couldn't scan models",
     "เปลี่ยนโมเดลไม่ได้": "Couldn't switch model",

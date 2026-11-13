@@ -25,6 +25,7 @@ import threading
 import time
 import traceback
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -52,7 +53,7 @@ THUMBS = se.THUMBS
 HISTORY_FILE = DATA / "history.json"
 HOST = os.environ.get("IMGS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("IMGS_PORT", "47824"))
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 MAX_ACTIVE_JOBS = 8
 # Per-image upload cap for train datasets (photos are ~1–5 MB).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -977,6 +978,7 @@ def api_open_folder(which: str = "images"):
         "models": se.MODELS_ROOT,
         "loras": se.MODELS_ROOT / "loras",
         "logs": DATA,
+        "backups": DATA / "backups",
     }.get(which, IMAGES)
     try:
         if sys.platform.startswith("win"):
@@ -1019,6 +1021,16 @@ class TrainRequest(BaseModel):
     # multi-character policy (exclude | weighted | include)
     multi_mode: str = "exclude"
     multi_weight: float = 0.25
+    # recipe options (Phase 2)
+    bucketing: bool = True
+    caption_dropout: float = 0.05
+    caption_shuffle: bool = False
+    keep_tokens: int = 1
+    noise_offset: float = 0.0
+    min_snr_gamma: float = 0.0
+    use_rslora: bool = False
+    target_modules: str = "attn"  # attn | attn_ff
+    resume_state: bool = False
     # continue training from an existing adapter (id/name from /api/loras)
     init_lora: str = Field(default="", max_length=200)
     # thermal guard: slow the GPU down (default) instead of pausing it
@@ -1029,6 +1041,21 @@ class TrainRequest(BaseModel):
     thermal_resume_c: int = 80
     thermal_step_pct: int = 5
     thermal_check_every: int = 10
+
+
+class SampleRequest(BaseModel):
+    """Post-training sample: a normal generation job using the fresh LoRA."""
+
+    lora_id: str = Field(default="", max_length=200)
+    model_id: str = Field(default="", max_length=200)
+    prompt: str = Field(default="", max_length=4000)
+    negative_prompt: str = Field(default="", max_length=2000)
+    width: int = 1024
+    height: int = 1024
+    steps: int = 20
+    guidance: float = 4.5
+    seed: int = -1
+    batch: int = 4
 
 
 def _active_count() -> int:
@@ -1081,7 +1108,12 @@ def api_train_create_dataset(req: dict):
     name = (req.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "ตั้งชื่อ dataset ก่อน")
-    entry = strn.create_dataset(name, str(req.get("trigger") or ""), str(req.get("kind") or "character"))
+    entry = strn.create_dataset(
+        name,
+        str(req.get("trigger") or ""),
+        str(req.get("kind") or "character"),
+        req.get("extra_triggers"),
+    )
     return {"ok": True, "dataset": entry}
 
 
@@ -1093,6 +1125,7 @@ def api_train_update_dataset(ds_id: str, req: dict):
             name=req.get("name"),
             trigger=req.get("trigger"),
             kind=req.get("kind"),
+            extra_triggers=req.get("extra_triggers"),
         )
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -1164,6 +1197,46 @@ def api_train_set_captions(ds_id: str, req: dict):
     return {"ok": True, "dataset": entry}
 
 
+@app.get("/api/train/datasets/{ds_id}/qc")
+def api_train_dataset_qc(ds_id: str, resolution: int = 1024):
+    try:
+        return strn.dataset_qc(ds_id, max(256, min(1536, int(resolution))))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/train/datasets/{ds_id}/sample")
+def api_train_sample(ds_id: str, req: SampleRequest):
+    ds = strn.get_dataset(ds_id)
+    if ds is None:
+        raise HTTPException(404, "ไม่พบ dataset นี้")
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        prompt = ", ".join(
+            part
+            for part in [
+                ds.get("trigger") or "",
+                *[str(t) for t in (ds.get("extra_triggers") or [])],
+            ]
+            if part
+        )
+    if not prompt:
+        raise HTTPException(400, "ใส่พรอมป์ตหรือ trigger ก่อนสร้างตัวอย่าง")
+    gen = GenerateRequest(
+        prompt=prompt,
+        negative_prompt=req.negative_prompt,
+        width=req.width,
+        height=req.height,
+        steps=req.steps,
+        guidance=req.guidance,
+        seed=req.seed,
+        batch=req.batch,
+        model_id=req.model_id or None,
+        loras=[LoraSpec(id=req.lora_id, weight=1.0)] if req.lora_id else [],
+    )
+    return api_generate(gen)
+
+
 @app.post("/api/train/datasets/{ds_id}/train")
 def api_train_start(ds_id: str, req: TrainRequest):
     _check_capacity()
@@ -1210,7 +1283,10 @@ def api_train_start(ds_id: str, req: TrainRequest):
     # selected policy leaves no images to train on.
     try:
         strn.select_train_images(
-            ds.get("images") or [], req.multi_mode, req.multi_weight
+            ds.get("images") or [],
+            req.multi_mode,
+            req.multi_weight,
+            ds.get("kind") or "character",
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1258,6 +1334,15 @@ def api_train_start(ds_id: str, req: TrainRequest):
         "grad_accum": req.grad_accum,
         "multi_mode": req.multi_mode,
         "multi_weight": req.multi_weight,
+        "bucketing": req.bucketing,
+        "caption_dropout": req.caption_dropout,
+        "caption_shuffle": req.caption_shuffle,
+        "keep_tokens": req.keep_tokens,
+        "noise_offset": req.noise_offset,
+        "min_snr_gamma": req.min_snr_gamma,
+        "use_rslora": req.use_rslora,
+        "target_modules": req.target_modules,
+        "resume_state": req.resume_state,
         "thermal_guard": req.thermal_guard,
         "thermal_mode": req.thermal_mode,
         "thermal_max_c": req.thermal_max_c,
@@ -2423,6 +2508,201 @@ def api_power_setup():
 
     _POWER_READY_CACHE.update(at=0.0, value=True)
     return _power_status_payload()
+
+
+# ── backup / restore ─────────────────────────────────────────────────────────
+# One ZIP with the user's own data: history, images, thumbnails, presets and
+# training datasets. Models and LoRAs are NOT included (they are large and live
+# in models/); the UI says so. Restore is additive: it never deletes anything.
+BACKUP_FORMAT = 1
+BACKUP_TOP_FILES = (
+    "history.json",
+    "prompt_presets.json",
+    "train_datasets.json",
+    "prompt-collection.txt",
+)
+BACKUP_TREES = ("images", "thumbs", "train")
+MAX_BACKUP_UPLOAD = 4 * 1024 ** 3   # 4 GB compressed
+MAX_BACKUP_FILES = 20000
+MAX_BACKUP_UNCOMPRESSED = 12 * 1024 ** 3  # 12 GB after extraction
+
+
+def _backup_member_ok(name: str) -> bool:
+    """Reject absolute paths, traversal, and anything outside the allowlist."""
+    if not name or name.startswith("/") or "\\" in name or "\x00" in name:
+        return False
+    parts = Path(name).parts
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    if len(parts) == 1:
+        return name in BACKUP_TOP_FILES or name == "manifest.json"
+    return parts[0] in BACKUP_TREES
+
+
+@app.post("/api/backup/export")
+def api_backup_export():
+    backup_dir = DATA / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = backup_dir / f"pixelsmith-backup-{stamp}.zip"
+    manifest = {
+        "format": BACKUP_FORMAT,
+        "app_version": VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "note": "history, images, thumbs, prompt presets and training datasets",
+    }
+    files = 0
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for name in BACKUP_TOP_FILES:
+            src = DATA / name
+            if src.is_file():
+                zf.write(src, name)
+                files += 1
+        for tree in BACKUP_TREES:
+            base = DATA / tree
+            if not base.is_dir():
+                continue
+            for src in sorted(base.rglob("*")):
+                if src.is_file():
+                    zf.write(src, f"{tree}/{src.relative_to(base).as_posix()}")
+                    files += 1
+    return {
+        "ok": True,
+        "path": str(target),
+        "size": target.stat().st_size,
+        "files": files,
+        "created_at": manifest["created_at"],
+    }
+
+
+def _merge_json_list(path: Path, incoming, key: str) -> int:
+    """Add incoming records whose key is not already present. Returns added."""
+    if not isinstance(incoming, list):
+        return 0
+    try:
+        current = json.loads(path.read_text("utf-8")) if path.is_file() else []
+    except Exception:  # noqa: BLE001
+        current = []
+    if not isinstance(current, list):
+        current = []
+    seen = {row.get(key) for row in current if isinstance(row, dict)}
+    added = [row for row in incoming if isinstance(row, dict) and row.get(key) not in seen]
+    if added:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(current + added, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    return len(added)
+
+
+@app.post("/api/backup/restore")
+async def api_backup_restore(file: UploadFile = File(...)):
+    if ordered_active_jobs():
+        raise HTTPException(409, "มีงานกำลังรันหรือรอคิวอยู่ — รอให้เสร็จก่อนกู้คืน")
+    backup_dir = DATA / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    tmp = backup_dir / f".restore-{uuid.uuid4().hex}.zip"
+    size = 0
+    try:
+        with tmp.open("wb") as fh:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_BACKUP_UPLOAD:
+                    raise HTTPException(413, "ไฟล์สำรองใหญ่เกินไป (สูงสุด 4 GB)")
+                fh.write(chunk)
+        try:
+            with zipfile.ZipFile(tmp) as zf:
+                infos = zf.infolist()
+                if len(infos) > MAX_BACKUP_FILES:
+                    raise HTTPException(400, "ไฟล์สำรองมีไฟล์มากเกินไป")
+                if sum(i.file_size for i in infos) > MAX_BACKUP_UNCOMPRESSED:
+                    raise HTTPException(400, "ข้อมูลในไฟล์สำรองใหญ่เกินไป")
+                names = [i.filename for i in infos]
+                if "manifest.json" not in names:
+                    raise HTTPException(400, "ไม่ใช่ไฟล์สำรองของ PixelSmith (ไม่มี manifest)")
+                try:
+                    manifest = json.loads(zf.read("manifest.json"))
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(400, f"manifest เสียหาย: {exc}") from exc
+                if int(manifest.get("format") or 0) != BACKUP_FORMAT:
+                    raise HTTPException(400, "ไฟล์สำรองเวอร์ชันไม่รองรับ")
+                for name in names:
+                    if name.endswith("/"):
+                        continue
+                    if not _backup_member_ok(name):
+                        raise HTTPException(400, f"path ในไฟล์สำรองไม่ปลอดภัย: {name}")
+
+                counts = {"images": 0, "thumbs": 0, "train": 0}
+                payloads: dict[str, bytes] = {}
+                for info in infos:
+                    name = info.filename
+                    if name.endswith("/") or name == "manifest.json":
+                        continue
+                    if "/" not in name:
+                        payloads[name] = zf.read(name)
+                        continue
+                    tree, _, rel = name.partition("/")
+                    dest = DATA / tree / rel
+                    if dest.exists():
+                        continue  # additive restore: keep local files
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, dest.open("wb") as out:
+                        shutil.copyfileobj(src, out)
+                    counts[tree] += 1
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "ไฟล์ ZIP เสียหายหรือไม่สมบูรณ์") from exc
+
+        history_added = _merge_json_list(HISTORY_FILE, _json_from(payloads.get("history.json")), "id")
+        if history_added:
+            with STATE_LOCK:
+                known = {row.get("id") for row in HISTORY if isinstance(row, dict)}
+                for row in _json_from(payloads.get("history.json")) or []:
+                    if isinstance(row, dict) and row.get("id") not in known:
+                        HISTORY.append(row)
+                        known.add(row.get("id"))
+            persist_history()
+        presets_added = _merge_json_list(
+            ppres.PRESETS_FILE, _json_from(payloads.get("prompt_presets.json")), "name"
+        )
+        datasets_added = _merge_json_list(
+            strn.REGISTRY_FILE, _json_from(payloads.get("train_datasets.json")), "id"
+        )
+        collection = payloads.get("prompt-collection.txt")
+        collection_added = 0
+        if collection:
+            dest = DATA / "prompt-collection.txt"
+            if not dest.exists():
+                dest.write_bytes(collection)
+                collection_added = 1
+        return {
+            "ok": True,
+            "restored": {
+                **counts,
+                "history": history_added,
+                "presets": presets_added,
+                "datasets": datasets_added,
+                "prompt_collection": collection_added,
+            },
+            "manifest": manifest,
+        }
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _json_from(raw: bytes | None):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── static pages ─────────────────────────────────────────────────────────────

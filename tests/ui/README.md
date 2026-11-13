@@ -26,6 +26,8 @@ binary.
 | studio → host blocking | a studio operation asks the host to show the overlay, the overlay covers the top bar, the studio's own overlay stays hidden, and the host overlay hides afterwards |
 | app dialog IPC | `app-dialog` payload renders title/message/detail/buttons, the clicked index travels back to the main process, and Escape answers with `cancelId` |
 | iframe bridge | the studio iframe reaches `parent.pixelApp.getPathForFile` and it returns a string without throwing |
+| backup / restore | the settings pane exposes export/import, export shows the blocking status and reports files/size, the toast appears, import asks for confirmation and shows a summary, and the EN state is translated |
+| trainer datasets | the train pane renders the dataset kind, extra triggers, per-image trigger/tags/repeats, hides the multi selector for non-character kinds, shows the kind-aware audit + hint, the steps calculator counts repeats × epochs and writes the steps field, presets set rank/steps/LR/scheduler, and the EN labels are translated |
 
 `tests/ui/run.js` prints `PASS`/`FAIL` per check and exits non-zero when
 anything fails. `tests/ui/harness.js` holds the static server and helpers.

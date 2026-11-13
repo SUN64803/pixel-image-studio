@@ -262,6 +262,16 @@ def test_train_param_validation():
         assert cfg["multi_mode"] == "exclude"
         assert cfg["multi_weight"] == 1.0
         assert cfg["augment_flip"] is False
+        # phase-2 recipe defaults / clamps
+        assert cfg["bucketing"] is True
+        assert cfg["caption_dropout"] == 0.05
+        assert cfg["caption_shuffle"] is False
+        assert cfg["keep_tokens"] == 1
+        assert cfg["noise_offset"] == 0.0
+        assert cfg["min_snr_gamma"] == 0.0
+        assert cfg["use_rslora"] is False
+        assert cfg["target_set"] == "attn"
+        assert cfg["resume_state"] is False
         # thermal guard clamps to a safe band; resume stays below the throttle
         assert cfg["thermal_guard"] is True
         assert cfg["thermal_mode"] == "throttle"
@@ -311,6 +321,32 @@ def test_train_param_validation():
         assert cfg2["thermal_resume_c"] == 81
         assert cfg2["thermal_step_pct"] == 4
         assert cfg2["thermal_max_level"] == 6
+
+        # phase-2 explicit values are preserved and clamped
+        cfg_phase2 = trainer._sanitize(
+            {
+                "dataset_id": ds_id,
+                "lora_name": "x",
+                "bucketing": False,
+                "caption_dropout": 9,
+                "caption_shuffle": True,
+                "keep_tokens": 9,
+                "noise_offset": 9,
+                "min_snr_gamma": 99,
+                "use_rslora": True,
+                "target_modules": "attn_ff",
+                "resume_state": True,
+            }
+        )
+        assert cfg_phase2["bucketing"] is False
+        assert cfg_phase2["caption_dropout"] == 0.3
+        assert cfg_phase2["caption_shuffle"] is True
+        assert cfg_phase2["keep_tokens"] == 4
+        assert cfg_phase2["noise_offset"] == 0.2
+        assert cfg_phase2["min_snr_gamma"] == 20.0
+        assert cfg_phase2["use_rslora"] is True
+        assert cfg_phase2["target_set"] == "attn_ff"
+        assert cfg_phase2["resume_state"] is True
 
         # EMA is opt-in: explicit true is still honoured
         cfg3 = trainer._sanitize({"dataset_id": ds_id, "lora_name": "x", "ema": True})
@@ -698,6 +734,14 @@ def test_sdxl_sanitize_defaults_and_clamps(tmp_path):
         assert cfg["sampling"] == "logit_normal"
         assert cfg["ema"] is False
         assert cfg["out_path"].parent == st.se.MODELS_ROOT / "loras"
+        assert cfg["bucketing"] is True
+        assert cfg["caption_dropout"] == 0.05
+        assert cfg["keep_tokens"] == 1
+        assert cfg["noise_offset"] == 0.0
+        assert cfg["min_snr_gamma"] == 0.0
+        assert cfg["use_rslora"] is False
+        assert cfg["target_set"] == "attn"
+        assert cfg["resume_state"] is False
 
         cfg2 = trainer._sanitize(
             {
@@ -750,5 +794,325 @@ def test_sdxl_sanitize_rejects_non_sdxl_model(tmp_path):
             raise AssertionError("non-SDXL model should be rejected")
         except RuntimeError as exc:
             assert "SDXL" in str(exc)
+    finally:
+        st.delete_dataset(ds_id)
+
+
+def test_dataset_kinds_and_extra_triggers():
+    created = st.create_dataset(
+        "Kind Test", "lola", "outfit", extra_triggers="armor form, casual, armor form"
+    )
+    ds_id = created["id"]
+    try:
+        assert created["kind"] == "outfit"
+        assert created["extra_triggers"] == ["armor form", "casual"]
+        # invalid kind falls back to character
+        bad = st.create_dataset("Bad Kind", "x", "banana")
+        try:
+            assert bad["kind"] == "character"
+        finally:
+            st.delete_dataset(bad["id"])
+        # changing the primary trigger drops it from the extra list
+        updated = st.update_dataset(ds_id, trigger="Armor Form")
+        assert updated["trigger"] == "armor form"
+        assert "armor form" not in updated["extra_triggers"]
+        # pose is a first-class kind now
+        assert st.update_dataset(ds_id, kind="pose")["kind"] == "pose"
+        assert st.update_dataset(ds_id, kind="banana")["kind"] == "pose"
+    finally:
+        st.delete_dataset(ds_id)
+
+
+def test_sanitize_tags_triggers_repeats():
+    assert st.sanitize_tags("Front View, smiling; front view") == [
+        "front view",
+        "smiling",
+    ]
+    assert st.sanitize_tags(["a", "A", " b "]) == ["a", "b"]
+    assert st.sanitize_tags("") == []
+    assert st.sanitize_extra_triggers("a, b, a", "a") == ["b"]
+    assert st.sanitize_repeats("7") == 7
+    assert st.sanitize_repeats(0) == 1
+    assert st.sanitize_repeats(999) == st.MAX_REPEATS
+    assert st.sanitize_repeats("nope") == 1
+
+
+def test_effective_caption_tags_and_trigger_override():
+    ds = {"trigger": "foxy", "name": "x"}
+    # tags are inserted after the trigger, before the free caption
+    assert (
+        st._effective_caption(
+            {"caption": "standing in snow", "tags": ["front view", "smiling"]}, ds
+        )
+        == "foxy, front view, smiling, standing in snow"
+    )
+    # a per-image trigger override replaces the dataset trigger
+    assert (
+        st._effective_caption(
+            {"caption": "battle pose", "trigger": "armor form"}, ds
+        )
+        == "armor form, battle pose"
+    )
+    # tags already present in the caption are not duplicated
+    assert (
+        st._effective_caption(
+            {"caption": "front view, standing", "tags": ["front view"]}, ds
+        )
+        == "foxy, front view, standing"
+    )
+    # duplicate tags (case-insensitive) are collapsed
+    assert (
+        st._effective_caption(
+            {"caption": "", "tags": ["Front View", "front view"]}, ds
+        )
+        == "foxy, front view"
+    )
+    # no trigger/tags/caption still yields a usable caption
+    assert st._effective_caption({"caption": ""}, {"trigger": ""}) == "subject"
+
+
+def test_select_train_images_repeats_and_non_character():
+    images = [
+        {"file": "a", "repeats": 3},
+        {"file": "b", "multi": True, "repeats": 2},
+        {"file": "c"},
+    ]
+    solo, weights, mode = st.select_train_images(images, "exclude", 0.25)
+    assert [im["file"] for im in solo] == ["a", "c"]
+    assert weights == [3.0, 1.0]
+
+    included, weights, mode = st.select_train_images(images, "include", 0.25)
+    assert [im["file"] for im in included] == ["a", "b", "c"]
+    assert weights == [3.0, 2.0, 1.0]
+
+    # weighted combines the multi factor with repeats
+    _, weights, _ = st.select_train_images(images, "weighted", 0.5)
+    assert weights == [3.0, 1.0, 1.0]
+
+    # style/outfit/pose datasets never drop multi-flagged images
+    included, weights, mode = st.select_train_images(
+        images, "exclude", 0.25, kind="style"
+    )
+    assert mode == "include"
+    assert [im["file"] for im in included] == ["a", "b", "c"]
+    assert weights == [3.0, 2.0, 1.0]
+
+    # repeats are clamped to 1..10
+    _, weights, _ = st.select_train_images(
+        [{"file": "a", "repeats": 99}, {"file": "b", "repeats": 0}], "include", 0.25
+    )
+    assert weights == [10.0, 1.0]
+
+
+def test_set_captions_saves_tags_trigger_repeats():
+    created = st.create_dataset("Caption Fields", "capfield", "character")
+    ds_id = created["id"]
+    try:
+        datasets = st.load_registry()
+        for d in datasets:
+            if d.get("id") == ds_id:
+                d["images"] = _sample_images(1)
+        st.save_registry(datasets)
+        file_id = st.get_dataset(ds_id)["images"][0]["file"]
+        st.set_captions(
+            ds_id,
+            [
+                {
+                    "file": file_id,
+                    "caption": "posing",
+                    "tags": "Front View, smiling",
+                    "trigger": " Armor Form ",
+                    "repeats": 4,
+                }
+            ],
+        )
+        image = st.get_dataset(ds_id)["images"][0]
+        assert image["tags"] == ["front view", "smiling"]
+        assert image["trigger"] == "armor form"
+        assert image["repeats"] == 4
+        # omitted fields keep their previous values
+        st.set_captions(ds_id, [{"file": file_id, "caption": "new caption"}])
+        image = st.get_dataset(ds_id)["images"][0]
+        assert image["tags"] == ["front view", "smiling"]
+        assert image["trigger"] == "armor form"
+        assert image["repeats"] == 4
+    finally:
+        st.delete_dataset(ds_id)
+
+
+def test_resolution_buckets_and_pick():
+    buckets = st.resolution_buckets(1024)
+    assert (1024, 1024) in buckets
+    assert (1216, 832) in buckets or (1152, 896) in buckets
+    # all sides are multiples of 64 and >= 256
+    for width, height in buckets:
+        assert width % st.BUCKET_STEP == 0
+        assert height % st.BUCKET_STEP == 0
+        assert width >= 256 and height >= 256
+    # portrait / landscape / square pick matching orientation
+    assert st.pick_bucket(1000, 2000, 1024)[1] > st.pick_bucket(1000, 2000, 1024)[0]
+    assert st.pick_bucket(2000, 1000, 1024)[0] > st.pick_bucket(2000, 1000, 1024)[1]
+    assert st.pick_bucket(1024, 1024, 1024) == (1024, 1024)
+    # invalid input falls back to square
+    assert st.pick_bucket(0, 0, 768) == (768, 768)
+
+
+def test_caption_variants_shuffle_and_keep_tokens():
+    ds = {"trigger": "lola"}
+    image = {"caption": "smiling, park, sunny", "tags": ["front view"], "trigger": ""}
+    base = st._effective_caption(image, ds)
+    assert st.caption_variants(image, ds) == [base]
+    variants = st.caption_variants(image, ds, shuffle=True, keep_tokens=1, count=4)
+    assert len(variants) == 4
+    assert variants[0] == base
+    # first segment (trigger) is never moved
+    for variant in variants[1:]:
+        assert variant.split(",")[0].strip() == "lola"
+    # deterministic for the same caption
+    assert variants == st.caption_variants(image, ds, shuffle=True, keep_tokens=1, count=4)
+    # a caption with only one content segment can still be reordered with the
+    # trigger, but the variant count is honoured
+    solo = {"caption": "only", "tags": []}
+    solo_variants = st.caption_variants(solo, ds, shuffle=True, count=3)
+    assert len(solo_variants) == 3
+    assert solo_variants[0] == st._effective_caption(solo, ds)
+
+
+def test_noise_offset_and_min_snr_weight():
+    torch.manual_seed(0)
+    noise = torch.zeros(2, 4, 8, 8)
+    plain = st.add_noise_offset(noise, 0.0)
+    assert torch.equal(plain, noise)
+    shifted = st.add_noise_offset(noise, 0.1)
+    assert shifted.shape == noise.shape
+    assert shifted.abs().sum() > 0
+    # same channel shares one offset across spatial positions
+    assert torch.allclose(shifted[0, 0, 0, 0], shifted[0, 0, 3, 5])
+    weight = st.min_snr_weight(torch.tensor([0.1, 1.0, 10.0]), 5.0)
+    assert weight[0] == pytest.approx(1.0)
+    assert weight[1] == pytest.approx(1.0)
+    assert weight[2] == pytest.approx(0.5)
+    assert st.min_snr_weight(torch.tensor([1.0]), 0) is None
+
+
+def test_train_state_roundtrip(tmp_path):
+    param = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    opt = torch.optim.AdamW([param], lr=1e-3)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda _s: 1.0)
+    rng = __import__("random").Random(7)
+    g_rng = torch.Generator(device="cpu").manual_seed(7)
+    ema = {"x.lora_A.weight": torch.tensor([0.5])}
+    param.grad = torch.tensor([0.1, 0.2])
+    opt.step()
+    sched.step()
+    path = st.trainstate_path(tmp_path / "adapter.safetensors")
+    st.save_train_state(
+        path,
+        optimizer=opt,
+        scheduler=sched,
+        step=42,
+        ema_params=ema,
+        rng=rng,
+        g_rng=g_rng,
+        ema_loss=0.123,
+        rank=16,
+    )
+    assert path.exists()
+    param2 = torch.nn.Parameter(torch.tensor([9.0, 9.0]))
+    opt2 = torch.optim.AdamW([param2], lr=1e-3)
+    sched2 = torch.optim.lr_scheduler.LambdaLR(opt2, lambda _s: 1.0)
+    ema2 = {"x.lora_A.weight": torch.tensor([0.0])}
+    step, loss = st.load_train_state(
+        path,
+        optimizer=opt2,
+        scheduler=sched2,
+        ema_params=ema2,
+        rng=__import__("random").Random(0),
+        g_rng=torch.Generator(device="cpu"),
+        rank=16,
+    )
+    assert step == 42
+    assert loss == pytest.approx(0.123)
+    assert torch.allclose(ema2["x.lora_A.weight"], torch.tensor([0.5]))
+    # rank mismatch is rejected
+    with pytest.raises(RuntimeError):
+        st.load_train_state(
+            path,
+            optimizer=opt2,
+            scheduler=sched2,
+            ema_params=ema2,
+            rng=__import__("random").Random(0),
+            g_rng=None,
+            rank=8,
+        )
+
+
+def test_rslora_scaling_roundtrip(tmp_path):
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(4, 4, bias=False)
+
+    base = Tiny()
+    cfg = LoraConfig(
+        r=4, lora_alpha=4, init_lora_weights="gaussian",
+        target_modules=["proj"], bias="none", use_rslora=True,
+    )
+    model = inject_adapter_in_model(cfg, base)
+    path = tmp_path / "rs.safetensors"
+    st._save_lora_state(
+        model, path, {"rank": "4"}, prefix="", lora_b_scale=2.0
+    )
+    with safe_open(str(path), framework="pt") as handle:
+        keys = list(handle.keys())
+        b_key = next(k for k in keys if k.endswith("lora_B.weight"))
+        saved_b = handle.get_tensor(b_key).float()
+    with torch.no_grad():
+        raw_b = model.proj.lora_B.default.weight.detach().float()
+    assert torch.allclose(saved_b, raw_b * 2.0, atol=1e-2)
+    # loading back with 1/scale restores the original magnitude
+    fresh = inject_adapter_in_model(
+        LoraConfig(r=4, lora_alpha=4, init_lora_weights="gaussian",
+                   target_modules=["proj"], bias="none", use_rslora=True),
+        Tiny(),
+    )
+    loaded, skipped = st._load_lora_weights(
+        fresh, path, prefix="", lora_b_scale=0.5
+    )
+    assert loaded >= 2 and not skipped
+    with torch.no_grad():
+        restored = fresh.proj.lora_B.default.weight.detach().float()
+    assert torch.allclose(restored, raw_b, atol=1e-2)
+
+
+def test_dataset_qc_reports_duplicates_and_buckets():
+    import tempfile
+    from PIL import Image
+
+    created = st.create_dataset("QC Test", "qctrigger", "character")
+    ds_id = created["id"]
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            Image.new("RGB", (640, 480), (10, 20, 30)).save(tmp.name)
+            src = tmp.name
+        first = st.add_image(ds_id, src, "qc-one.png")
+        second = st.add_image(ds_id, src, "qc-two.png")
+        st.set_captions(ds_id, [{"file": first["file"], "caption": "park"}])
+        report = st.dataset_qc(ds_id, 1024)
+        assert report["dataset"]["count"] == 2
+        assert report["dataset"]["solo"] == 2
+        assert report["dataset"]["missing_caption"] == 1
+        assert len(report["dataset"]["duplicates"]) == 1
+        assert report["dataset"]["duplicates"][0] == sorted(
+            [first["file"], second["file"]]
+        ) or set(report["dataset"]["duplicates"][0]) == {
+            first["file"], second["file"]
+        }
+        rows = {row["file"]: row for row in report["images"]}
+        assert rows[first["file"]]["width"] == 640
+        assert rows[first["file"]]["height"] == 480
+        assert rows[second["file"]]["bucket"].count("×") == 1
+        assert any("caption" in w for w in rows[second["file"]]["warnings"])
+        assert report["dataset"]["recommendations"]
     finally:
         st.delete_dataset(ds_id)

@@ -41,4 +41,14 @@ contextBridge.exposeInMainWorld("pixelApp", {
     return () => ipcRenderer.removeListener("app-dialog", handler);
   },
   dialogResult: (id, response) => ipcRenderer.send("app-dialog-result", { id, response }),
+  // engine crash recovery: main process → host page
+  restartEngine: () => ipcRenderer.invoke("restart-engine"),
+  onEngineStatus: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const handler = (_e, payload) => {
+      try { cb(payload); } catch (e) { /* page handler bug must not crash IPC */ }
+    };
+    ipcRenderer.on("engine-status", handler);
+    return () => ipcRenderer.removeListener("engine-status", handler);
+  },
 });

@@ -354,6 +354,361 @@ async function iframeBridgeSuite(port) {
   win.destroy();
 }
 
+async function backupSuite(port) {
+  console.log("\n── studio: backup / restore ───────────────────────────────");
+  const win = makeWindow(port);
+  await win.loadURL(`http://127.0.0.1:${port}/studio/`);
+  await sleep(1200);
+
+  const present = await win.webContents.executeJavaScript(`(() => ({
+    exportBtn: !!document.querySelector("#backupExport"),
+    importBtn: !!document.querySelector("#backupImport"),
+    input: !!document.querySelector("#backupFile"),
+    accept: (document.querySelector("#backupFile") || {}).accept || "",
+    state: (document.querySelector("#backupState") || {}).textContent || "",
+  }))()`);
+  check("backup export button exists", present.exportBtn);
+  check("backup import button exists", present.importBtn);
+  check("backup file input accepts zip", /zip/i.test(present.accept), present.accept);
+
+  await win.webContents.executeJavaScript(
+    `document.querySelector("#backupExport").click()`
+  );
+  await sleep(120);
+  const busy = await win.webContents.executeJavaScript(`(() => {
+    const b = document.querySelector("#busyOverlay");
+    return b && !b.classList.contains("hidden")
+      ? (document.querySelector("#busyText") || {}).textContent : "";
+  })()`);
+  check("backup export shows blocking status", /สำรองข้อมูล/.test(busy || ""), JSON.stringify(busy));
+
+  const done = await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `document.querySelector("#backupState").textContent.includes("ไฟล์")`
+      ),
+    6000
+  );
+  check("backup state reports the result", !!done);
+  const after = await win.webContents.executeJavaScript(`(() => ({
+    state: document.querySelector("#backupState").textContent,
+    toast: (document.querySelector("#toasts") || {}).textContent || "",
+    overlayHidden: document.querySelector("#busyOverlay").classList.contains("hidden"),
+  }))()`);
+  check("backup state shows file count and size", /7 ไฟล์/.test(after.state), after.state);
+  check("backup toast appears", /สำรองข้อมูลแล้ว/.test(after.toast), after.toast.slice(0, 80));
+  check("blocking overlay hides when export ends", after.overlayHidden);
+
+  // Import: feed a File through the hidden input, confirm, then dismiss reload.
+  const fed = await win.webContents.executeJavaScript(`(() => {
+    const input = document.querySelector("#backupFile");
+    if (!input) return false;
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([1, 2, 3])], "backup.zip", { type: "application/zip" }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  check("backup file input accepts a file", fed);
+  await sleep(250);
+  const confirmOpen = await win.webContents.executeJavaScript(
+    `!document.querySelector("#confirmModal").classList.contains("hidden")`
+  );
+  check("restore asks for confirmation", confirmOpen);
+  await win.webContents.executeJavaScript(`document.querySelector("#confirmOk").click()`);
+  await sleep(900);
+  const summary = await win.webContents.executeJavaScript(`(() => ({
+    open: !document.querySelector("#confirmModal").classList.contains("hidden"),
+    title: document.querySelector("#confirmTitle").textContent,
+    body: document.querySelector("#confirmText").textContent,
+  }))()`);
+  check("restore reports a summary", summary.open && /กู้คืนแล้ว 7 รายการ/.test(summary.body), summary.body.slice(0, 90));
+  check("restore summary dialog is titled", /กู้คืนสำเร็จ/.test(summary.title), summary.title);
+  await win.webContents.executeJavaScript(`document.querySelector("#confirmCancel").click()`);
+  await sleep(200);
+
+  // EN mode: the export toast and restore dialog must be translated.
+  await win.webContents.executeJavaScript(`window.I18N.setLang("en")`);
+  await sleep(300);
+  await win.webContents.executeJavaScript(
+    `document.querySelector("#backupExport").click()`
+  );
+  await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `document.querySelector("#backupState").textContent.includes("files")`
+      ),
+    6000
+  );
+  const enState = await win.webContents.executeJavaScript(
+    `document.querySelector("#backupState").textContent`
+  );
+  check("EN backup state translated", /7 files/.test(enState), enState);
+  await win.webContents.executeJavaScript(`window.I18N.setLang("th")`);
+  win.destroy();
+}
+
+async function trainerSuite(port) {
+  console.log("\n── studio: trainer datasets ───────────────────────────────");
+  const win = makeWindow(port);
+  await win.loadURL(`http://127.0.0.1:${port}/studio/`);
+  await sleep(1200);
+
+  // The train pane only renders its dataset after the API stub responds.
+  await win.webContents.executeJavaScript(
+    `document.querySelector('#panelTabs .panel-tab[data-pane="train"]').click()`
+  );
+  await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `!!document.querySelector('#trainerDs option[value="ds-test"]')`
+      ),
+    6000
+  );
+  check(
+    "manual button available before selecting a dataset",
+    await win.webContents.executeJavaScript(`!!document.querySelector("#guideOpenTop")`)
+  );
+  await win.webContents.executeJavaScript(`(() => {
+    const sel = document.querySelector("#trainerDs");
+    sel.value = "ds-test";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await sleep(300);
+
+  const view = await win.webContents.executeJavaScript(`(() => {
+    const row = document.querySelector("#captionList .caption-row");
+    return {
+      active: !document.querySelector("#trainerActive").classList.contains("hidden"),
+      meta: document.querySelector("#dsMeta").textContent,
+      kind: document.querySelector("#dsKindEdit").value,
+      extra: document.querySelector("#dsExtraTriggers").value,
+      trigger: row.querySelector(".caption-trigger").value,
+      tags: row.querySelector(".caption-tags").value,
+      repeats: row.querySelector(".caption-repeats").value,
+      caption: row.querySelector(".caption-input").value,
+      multiHidden: getComputedStyle(row.querySelector(".caption-role")).display === "none",
+      audit: document.querySelector("#dsAudit").textContent,
+      hint: document.querySelector("#trainHint").textContent,
+      calc: document.querySelector("#calcSteps").textContent,
+    };
+  })()`);
+  check("dataset panel opens", view.active);
+  check("dataset kind rendered", view.kind === "style", view.kind);
+  check("extra triggers rendered", view.extra === "armor form", view.extra);
+  check("per-image trigger rendered", view.trigger === "armor form", view.trigger);
+  check("per-image tags rendered", view.tags === "front view", view.tags);
+  check("per-image repeats rendered", view.repeats === "3", view.repeats);
+  check("caption text rendered", view.caption === "posing", view.caption);
+  check("multi selector hidden for style datasets", view.multiHidden);
+  check(
+    "kind-aware audit shows the style target",
+    /เป้าหมาย/.test(view.audit) && /20–30/.test(view.audit) && !/เดี่ยว/.test(view.audit),
+    view.audit.slice(0, 90)
+  );
+  check(
+    "style training hint replaces the character one",
+    /💡 style:/.test(view.hint) && !/character:/.test(view.hint),
+    view.hint.slice(0, 80)
+  );
+  check(
+    "steps calculator counts repeats × epochs",
+    /30 steps/.test(view.calc) && /3 samples\/epoch/.test(view.calc),
+    view.calc
+  );
+
+  // Calculator → steps field
+  await win.webContents.executeJavaScript(`(() => {
+    document.querySelector("#calcEpochs").value = "5";
+    document.querySelector("#calcEpochs").dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#calcApply").click();
+  })()`);
+  await sleep(200);
+  const applied = await win.webContents.executeJavaScript(
+    `document.querySelector("#trainSteps").value`
+  );
+  check("apply calculator writes the steps field", applied === "15", applied);
+
+  // Preset → rank/steps/scheduler
+  await win.webContents.executeJavaScript(`(() => {
+    document.querySelector("#trainPreset").value = "character";
+    document.querySelector("#trainPresetApply").click();
+  })()`);
+  await sleep(200);
+  const preset = await win.webContents.executeJavaScript(`(() => ({
+    rank: document.querySelector("#trainRank").value,
+    steps: document.querySelector("#trainSteps").value,
+    lr: document.querySelector("#trainLr").value,
+    scheduler: document.querySelector("#trainScheduler").value,
+  }))()`);
+  check("preset sets rank", preset.rank === "32", preset.rank);
+  check("preset sets steps", preset.steps === "1200", preset.steps);
+  check("preset sets learning rate", preset.lr === "0.0001", preset.lr);
+  check("preset sets scheduler", preset.scheduler === "cosine", preset.scheduler);
+
+  // Phase-2 recipe controls exist and presets set them.
+  const phase2Fields = await win.webContents.executeJavaScript(`(() => ({
+    bucketing: !!document.querySelector("#trainBucketing"),
+    captionDropout: !!document.querySelector("#trainCaptionDropout"),
+    captionShuffle: !!document.querySelector("#trainCaptionShuffle"),
+    keepTokens: !!document.querySelector("#trainKeepTokens"),
+    noiseOffset: !!document.querySelector("#trainNoiseOffset"),
+    minSnr: !!document.querySelector("#trainMinSnr"),
+    rsLora: !!document.querySelector("#trainRsLora"),
+    targetModules: !!document.querySelector("#trainTargetModules"),
+    resume: !!document.querySelector("#trainResumeState"),
+  }))()`);
+  check(
+    "phase-2 recipe controls rendered",
+    Object.values(phase2Fields).every(Boolean),
+    JSON.stringify(phase2Fields)
+  );
+
+  await win.webContents.executeJavaScript(`(() => {
+    document.querySelector("#trainPreset").value = "style";
+    document.querySelector("#trainPresetApply").click();
+  })()`);
+  await sleep(200);
+  const stylePreset = await win.webContents.executeJavaScript(`(() => ({
+    bucketing: document.querySelector("#trainBucketing").checked,
+    shuffle: document.querySelector("#trainCaptionShuffle").checked,
+    minSnr: document.querySelector("#trainMinSnr").value,
+    noise: document.querySelector("#trainNoiseOffset").value,
+    keep: document.querySelector("#trainKeepTokens").value,
+  }))()`);
+  check("style preset enables bucketing", stylePreset.bucketing);
+  check("style preset enables caption shuffle", stylePreset.shuffle);
+  check("style preset sets min-SNR", stylePreset.minSnr === "5", stylePreset.minSnr);
+  check("style preset sets noise offset", stylePreset.noise === "0.02", stylePreset.noise);
+  check("style preset sets keep tokens", stylePreset.keep === "1", stylePreset.keep);
+
+  // Dataset QC report renders.
+  await win.webContents.executeJavaScript(
+    `document.querySelector("#dsQcRun").click()`
+  );
+  await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `document.querySelector("#dsQcResult").textContent.includes("ข้อมูลพร้อมเทรน")`
+      ),
+    5000
+  );
+  const qc = await win.webContents.executeJavaScript(`(() => ({
+    visible: !document.querySelector("#dsQcResult").classList.contains("hidden"),
+    text: document.querySelector("#dsQcResult").textContent,
+  }))()`);
+  check("QC report visible", qc.visible);
+  check("QC report shows recommendation", /ข้อมูลพร้อมเทรน/.test(qc.text));
+
+  // Sample generation button queues a job with the selected LoRA.
+  const sampleLoraReady = await win.webContents.executeJavaScript(
+    `!!document.querySelector('#sampleLora option[value="lora-test"]')`
+  );
+  check("sample LoRA picker populated", sampleLoraReady);
+  await win.webContents.executeJavaScript(`(() => {
+    document.querySelector("#sampleLora").value = "lora-test";
+    document.querySelector("#sampleRun").click();
+  })()`);
+  await sleep(400);
+
+  // In-app training manual: opens, searches, deep-links and re-renders in EN.
+  await win.webContents.executeJavaScript(
+    `document.querySelector("#guideOpen").click()`
+  );
+  await waitFor(
+    () =>
+      win.webContents.executeJavaScript(
+        `!document.querySelector("#guideModal").classList.contains("hidden") &&
+         document.querySelectorAll("#guideContent .guide-section").length > 20`
+      ),
+    5000
+  );
+  const guideTh = await win.webContents.executeJavaScript(`(() => ({
+    title: document.querySelector("#guideTitle").textContent,
+    sections: document.querySelectorAll("#guideContent .guide-section").length,
+    toc: document.querySelectorAll("#guideToc .guide-toc-item").length,
+    text: document.querySelector("#guideContent").textContent,
+  }))()`);
+  check("guide opens with all sections", guideTh.sections >= 30, String(guideTh.sections));
+  check("guide TOC populated", guideTh.toc === guideTh.sections, `${guideTh.toc}/${guideTh.sections}`);
+  check("guide TH title", /คู่มือการเทรน/.test(guideTh.title), guideTh.title);
+  check(
+    "guide TH covers bucketing + recommendations",
+    /bucketing/i.test(guideTh.text) && /แนะนำ/.test(guideTh.text)
+  );
+
+  await win.webContents.executeJavaScript(`(() => {
+    const s = document.querySelector("#guideSearch");
+    s.value = "rsLoRA";
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await sleep(200);
+  const guideSearch = await win.webContents.executeJavaScript(`(() => ({
+    sections: document.querySelectorAll("#guideContent .guide-section").length,
+    text: document.querySelector("#guideContent").textContent,
+  }))()`);
+  check(
+    "guide search filters to rsLoRA",
+    guideSearch.sections >= 1 && guideSearch.sections < guideTh.sections,
+    String(guideSearch.sections)
+  );
+  check("guide search keeps matching content", /rsLoRA/.test(guideSearch.text));
+
+  await win.webContents.executeJavaScript(`(() => {
+    const s = document.querySelector("#guideSearch");
+    s.value = "";
+    s.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector('[data-guide-target="rank"]').click();
+  })()`);
+  await sleep(200);
+  const guideToc = await win.webContents.executeJavaScript(`(() => ({
+    active: document.querySelector("#guideToc .guide-toc-item.active")?.textContent || "",
+    rank: !!document.querySelector("#guide-sec-rank"),
+  }))()`);
+  check("guide TOC deep-link selects rank", guideToc.rank && /Rank/.test(guideToc.active), guideToc.active);
+
+  await win.webContents.executeJavaScript(`window.I18N.setLang("en")`);
+  await sleep(400);
+  const guideEn = await win.webContents.executeJavaScript(`(() => ({
+    title: document.querySelector("#guideTitle").textContent,
+    text: document.querySelector("#guideContent").textContent,
+    search: document.querySelector("#guideSearch").placeholder,
+    footer: document.querySelector("#guideFoot").textContent,
+  }))()`);
+  check("guide EN title", guideEn.title === "LoRA training manual", guideEn.title);
+  check(
+    "guide EN content translated",
+    /Aspect-ratio bucketing/.test(guideEn.text) && /recommended/i.test(guideEn.text)
+  );
+  check("guide EN search placeholder", /Search a topic/.test(guideEn.search), guideEn.search);
+  check("guide footer shows language", /EN/.test(guideEn.footer), guideEn.footer);
+
+  await win.webContents.executeJavaScript(
+    `document.querySelector("#guideClose").click()`
+  );
+  await sleep(200);
+  const guideClosed = await win.webContents.executeJavaScript(
+    `document.querySelector("#guideModal").classList.contains("hidden")`
+  );
+  check("guide closes", guideClosed);
+  await win.webContents.executeJavaScript(`window.I18N.setLang("th")`);
+  await sleep(300);
+
+  // EN mode: dynamically rendered trainer labels must be translated.
+  await win.webContents.executeJavaScript(`window.I18N.setLang("en")`);
+  await sleep(400);
+  const en = await win.webContents.executeJavaScript(`(() => ({
+    meta: document.querySelector("#dsMeta").textContent,
+    hint: document.querySelector("#trainHint").textContent,
+    kindOption: document.querySelector('#dsKindEdit option[value="style"]').textContent,
+  }))()`);
+  check("EN dataset kind translated", en.meta === "Style", en.meta);
+  check("EN style hint translated", /Style:/.test(en.hint), en.hint.slice(0, 60));
+  check("EN kind option translated", en.kindOption === "Style", en.kindOption);
+  await win.webContents.executeJavaScript(`window.I18N.setLang("th")`);
+  win.destroy();
+}
+
 async function main() {
   if (process.argv.includes("--help")) {
     console.log("usage: electron tests/ui/run.js  (or bash tests/ui/run.sh)");
@@ -369,6 +724,8 @@ async function main() {
     await studioBlockingSuite(port);
     await appDialogSuite(port);
     await iframeBridgeSuite(port);
+    await backupSuite(port);
+    await trainerSuite(port);
   } catch (err) {
     check("suite crashed", false, String((err && err.stack) || err));
   } finally {

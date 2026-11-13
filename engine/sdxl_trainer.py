@@ -104,6 +104,33 @@ class SdxlTrainer:
         except (TypeError, ValueError):
             multi_weight = 0.25
         multi_weight = max(0.05, min(1.0, multi_weight))
+        bucketing = st.sanitize_bool(params.get("bucketing"), True)
+        try:
+            caption_dropout = float(params.get("caption_dropout"))
+        except (TypeError, ValueError):
+            caption_dropout = 0.05
+        caption_dropout = max(0.0, min(0.3, caption_dropout))
+        caption_shuffle = st.sanitize_bool(params.get("caption_shuffle"), False)
+        try:
+            keep_tokens = int(params.get("keep_tokens"))
+        except (TypeError, ValueError):
+            keep_tokens = 1
+        keep_tokens = max(0, min(4, keep_tokens))
+        try:
+            noise_offset = float(params.get("noise_offset"))
+        except (TypeError, ValueError):
+            noise_offset = 0.0
+        noise_offset = max(0.0, min(0.2, noise_offset))
+        try:
+            min_snr_gamma = float(params.get("min_snr_gamma"))
+        except (TypeError, ValueError):
+            min_snr_gamma = 0.0
+        min_snr_gamma = max(0.0, min(20.0, min_snr_gamma))
+        use_rslora = st.sanitize_bool(params.get("use_rslora"), False)
+        target_set = str(params.get("target_modules") or "attn").lower()
+        if target_set not in ("attn", "attn_ff"):
+            target_set = "attn"
+        resume_state = st.sanitize_bool(params.get("resume_state"), False)
         thermal_guard = bool(params.get("thermal_guard", True))
         thermal_mode = str(params.get("thermal_mode") or "throttle").lower()
         if thermal_mode not in ("throttle", "pause"):
@@ -173,6 +200,15 @@ class SdxlTrainer:
             "grad_accum": grad_accum,
             "multi_mode": multi_mode,
             "multi_weight": multi_weight,
+            "bucketing": bucketing,
+            "caption_dropout": caption_dropout,
+            "caption_shuffle": caption_shuffle,
+            "keep_tokens": keep_tokens,
+            "noise_offset": noise_offset,
+            "min_snr_gamma": min_snr_gamma,
+            "use_rslora": use_rslora,
+            "target_set": target_set,
+            "resume_state": resume_state,
             "thermal_guard": thermal_guard,
             "thermal_mode": thermal_mode,
             "thermal_max_c": thermal_max_c,
@@ -198,7 +234,10 @@ class SdxlTrainer:
         cfg = self._sanitize(params)
         ds = cfg["ds"]
         train_images, sample_weights, multi_mode = st.select_train_images(
-            ds.get("images") or [], cfg["multi_mode"], cfg["multi_weight"]
+            ds.get("images") or [],
+            cfg["multi_mode"],
+            cfg["multi_weight"],
+            ds.get("kind") or "character",
         )
         solo_count = sum(1 for im in train_images if not im.get("multi"))
         multi_count = len(train_images) - solo_count
@@ -267,23 +306,29 @@ class SdxlTrainer:
             pipe.vae.to(device=device, dtype=torch.float32)
             scale = float(pipe.vae.config.scaling_factor)
             latents = []
+            sizes = []
             with torch.no_grad():
                 for index, image in enumerate(train_images):
                     if cancel.is_set():
                         raise se.Cancelled()
                     path = st.TRAIN_DIR / ds["id"] / image["file"]
                     img = Image.open(path).convert("RGB")
-                    img = ImageOps.fit(
-                        img,
-                        (cfg["resolution"], cfg["resolution"]),
-                        method=Image.LANCZOS,
+                    bucket = (
+                        st.pick_bucket(img.width, img.height, cfg["resolution"])
+                        if cfg["bucketing"]
+                        else (cfg["resolution"], cfg["resolution"])
                     )
+                    sizes.append(bucket)
+                    img = ImageOps.fit(img, bucket, method=Image.LANCZOS)
                     arr = np.asarray(img).astype(np.float32) / 255.0
                     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
                     pixel = tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
                     latent = pipe.vae.encode(pixel).latent_dist.sample()
                     latents.append((latent * scale).to(dtype=torch.float16))
-                    job["message"] = f"เตรียม latent {index + 1}/{len(train_images)}"
+                    job["message"] = (
+                        f"เตรียม latent {index + 1}/{len(train_images)} "
+                        f"({bucket[0]}×{bucket[1]})"
+                    )
                     job["progress"] = round(0.05 * (index + 1) / len(train_images), 4)
             pipe.vae = None
             gc.collect()
@@ -291,25 +336,49 @@ class SdxlTrainer:
                 torch.cuda.empty_cache()
 
             # ── 2. text encoders: embed every caption once, then free ──
-            effective = [st._effective_caption(img, ds) for img in train_images]
+            variant_count = 2 if cfg["caption_shuffle"] else 1
+            caption_groups = [
+                st.caption_variants(
+                    image,
+                    ds,
+                    cfg["caption_shuffle"],
+                    cfg["keep_tokens"],
+                    variant_count,
+                )
+                for image in train_images
+            ]
             status(
-                f"เตรียม embedding ของ caption ({len(effective)} รูป) — ตัวอย่าง: "
-                f"“{effective[0][:70]}”"
+                f"เตรียม embedding ของ caption ({len(caption_groups)} รูป · "
+                f"{sum(len(g) for g in caption_groups)} แบบ) — ตัวอย่าง: "
+                f"“{caption_groups[0][0][:70]}”"
             )
             pipe.text_encoder.to(device)
             pipe.text_encoder_2.to(device)
             embeds, pooled = [], []
             with torch.no_grad():
-                for text in effective:
-                    p_emb, _, p_pooled, _ = pipe.encode_prompt(
-                        prompt=text,
-                        prompt_2=text,
-                        device=device,
-                        num_images_per_prompt=1,
-                        do_classifier_free_guidance=False,
-                    )
-                    embeds.append(p_emb.to(dtype=torch.float16))
-                    pooled.append(p_pooled.to(dtype=torch.float16))
+                for group in caption_groups:
+                    group_embeds, group_pooled = [], []
+                    for text in group:
+                        p_emb, _, p_pooled, _ = pipe.encode_prompt(
+                            prompt=text,
+                            prompt_2=text,
+                            device=device,
+                            num_images_per_prompt=1,
+                            do_classifier_free_guidance=False,
+                        )
+                        group_embeds.append(p_emb.to(dtype=torch.float16))
+                        group_pooled.append(p_pooled.to(dtype=torch.float16))
+                    embeds.append(group_embeds)
+                    pooled.append(group_pooled)
+                empty_emb, _, empty_pooled, _ = pipe.encode_prompt(
+                    prompt="",
+                    prompt_2="",
+                    device=device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False,
+                )
+                empty_emb = empty_emb.to(dtype=torch.float16)
+                empty_pooled = empty_pooled.to(dtype=torch.float16)
             pipe.text_encoder = None
             pipe.text_encoder_2 = None
             pipe.tokenizer = None
@@ -319,27 +388,39 @@ class SdxlTrainer:
                 torch.cuda.empty_cache()
 
             # ── 3. inject LoRA into the UNet ──
-            status(f"ฉีด LoRA rank {cfg['rank']} (alpha={cfg['rank']}, scale 1.0)…")
+            targets = list(_TARGET_MODULES)
+            if cfg["target_set"] == "attn_ff":
+                targets += ["ff.net.0.proj", "ff.net.2"]
+            rs_note = " · rsLoRA" if cfg["use_rslora"] else ""
+            status(
+                f"ฉีด LoRA rank {cfg['rank']} "
+                f"(alpha={cfg['rank']}, targets={cfg['target_set']}{rs_note})…"
+            )
             unet.requires_grad_(False)
             unet.to(device)
             lora_cfg = LoraConfig(
                 r=cfg["rank"],
                 lora_alpha=cfg["rank"],
                 init_lora_weights="gaussian",
-                target_modules=_TARGET_MODULES,
+                target_modules=targets,
                 bias="none",
+                use_rslora=cfg["use_rslora"],
             )
             peft_unet = inject_adapter_in_model(lora_cfg, unet)
             trainable = [p for p in peft_unet.parameters() if p.requires_grad]
             for p in trainable:
                 p.data = p.data.float()
+            rs_scale = math.sqrt(cfg["rank"]) if cfg["use_rslora"] else 1.0
             if cfg["init_lora"] is not None:
                 status(
                     f"โหลดน้ำหนักตั้งต้นจาก {cfg['init_lora'].name} "
                     f"(rank {cfg['rank']})…"
                 )
                 loaded, skipped = st._load_lora_weights(
-                    peft_unet, cfg["init_lora"], prefix="unet."
+                    peft_unet,
+                    cfg["init_lora"],
+                    prefix="unet.",
+                    lora_b_scale=1.0 / rs_scale if cfg["use_rslora"] else 1.0,
                 )
                 print(
                     f"[sdxl-train] init LoRA {cfg['init_lora'].name}: "
@@ -400,12 +481,16 @@ class SdxlTrainer:
             )
             alphas_cumprod = noise_sched.alphas_cumprod.to(device=device)
             timestep_count = int(noise_sched.config.num_train_timesteps)
-            res = cfg["resolution"]
-            time_ids = torch.tensor(
-                [[res, res, 0, 0, res, res]],
-                device=device,
-                dtype=torch.float16,
-            )
+            # Per-image conditioning: SDXL expects the original size/crop
+            # coordinates, and bucketed images each have their own width/height.
+            time_ids = [
+                torch.tensor(
+                    [[width, height, 0, 0, width, height]],
+                    device=device,
+                    dtype=torch.float16,
+                )
+                for width, height in sizes
+            ]
 
             ema_params: dict[str, torch.Tensor] = {}
             if cfg["ema"]:
@@ -413,6 +498,30 @@ class SdxlTrainer:
                     if p.requires_grad and "lora_" in name:
                         ema_params[name] = p.detach().clone().float()
             ema_decay = cfg["ema_decay"] if ema_params else 0.0
+
+            start_step = 0
+            state_file = st.trainstate_path(cfg["out_path"])
+            if cfg["resume_state"] and state_file.is_file():
+                status(f"กู้สถานะการเทรนจาก {state_file.name}…")
+                try:
+                    start_step, saved_loss = st.load_train_state(
+                        state_file,
+                        optimizer=opt,
+                        scheduler=sched,
+                        ema_params=ema_params,
+                        rng=rng,
+                        g_rng=g_rng,
+                        rank=cfg["rank"],
+                    )
+                    if saved_loss is not None:
+                        ema_loss = float(saved_loss)
+                    print(
+                        f"[sdxl-train] resumed at step {start_step}/{cfg['steps']}",
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[sdxl-train] resume skipped: {exc}", flush=True)
+                    start_step = 0
 
             def _write_lora(path: Path, step_no: int, final: bool) -> None:
                 backup = {}
@@ -442,6 +551,14 @@ class SdxlTrainer:
                             "grad_accum": str(cfg["grad_accum"]),
                             "multi_mode": multi_mode,
                             "multi_weight": str(cfg["multi_weight"]),
+                            "bucketing": str(cfg["bucketing"]),
+                            "caption_dropout": str(cfg["caption_dropout"]),
+                            "caption_shuffle": str(cfg["caption_shuffle"]),
+                            "keep_tokens": str(cfg["keep_tokens"]),
+                            "noise_offset": str(cfg["noise_offset"]),
+                            "min_snr_gamma": str(cfg["min_snr_gamma"]),
+                            "use_rslora": str(cfg["use_rslora"]),
+                            "target_modules": cfg["target_set"],
                             "train_images": str(len(train_images)),
                             "solo_images": str(solo_count),
                             "multi_images": str(multi_count),
@@ -453,18 +570,35 @@ class SdxlTrainer:
                             "trained_at": st._now(),
                         },
                         prefix="unet.",
+                        lora_b_scale=rs_scale,
                     )
                 finally:
                     for name, p in peft_unet.named_parameters():
                         if name in backup:
                             p.data.copy_(backup[name])
 
+            def _save_state(lora_file: Path, step_no: int) -> None:
+                try:
+                    st.save_train_state(
+                        st.trainstate_path(lora_file),
+                        optimizer=opt,
+                        scheduler=sched,
+                        step=step_no,
+                        ema_params=ema_params,
+                        rng=rng,
+                        g_rng=g_rng,
+                        ema_loss=ema_loss,
+                        rank=cfg["rank"],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[sdxl-train] trainstate save skipped: {exc}", flush=True)
+
             job.update(
                 {
                     "phase": "generating",
                     "message": "เริ่มเทรน LoRA (SDXL)",
                     "steps": cfg["steps"],
-                    "step": 0,
+                    "step": start_step,
                     "batch": 1,
                     "progress": 0.05,
                     "status": "running",
@@ -483,7 +617,7 @@ class SdxlTrainer:
                 "applied": False,
                 "temp": None,
             }
-            for step in range(cfg["steps"]):
+            for step in range(start_step, cfg["steps"]):
                 if cancel.is_set():
                     raise se.Cancelled()
                 step_started = time.time()
@@ -515,10 +649,14 @@ class SdxlTrainer:
                     else:
                         index = rng.randrange(total)
                     x0 = latents[index]
-                    emb = embeds[index]
-                    pool = pooled[index]
+                    group = embeds[index]
+                    variant = rng.randrange(len(group))
+                    emb = group[variant]
+                    pool = pooled[index][variant]
                     if cfg["augment_flip"] and rng.random() < 0.5:
                         x0 = torch.flip(x0, dims=[-1])
+                    if cfg["caption_dropout"] and rng.random() < cfg["caption_dropout"]:
+                        emb, pool = empty_emb, empty_pooled
                     if cfg["sampling"] == "logit_normal":
                         u = 1.0 / (1.0 + math.exp(-rng.gauss(0.0, 1.0)))
                     else:
@@ -527,6 +665,7 @@ class SdxlTrainer:
                     noise = torch.randn(
                         x0.shape, generator=g_rng, device=device, dtype=x0.dtype
                     )
+                    noise = st.add_noise_offset(noise, cfg["noise_offset"], g_rng)
                     alpha = alphas_cumprod[t_int]
                     sqrt_a = alpha.sqrt()
                     sqrt_1ma = (1.0 - alpha).sqrt()
@@ -546,12 +685,25 @@ class SdxlTrainer:
                             encoder_hidden_states=emb,
                             added_cond_kwargs={
                                 "text_embeds": pool,
-                                "time_ids": time_ids,
+                                "time_ids": time_ids[index],
                             },
                             return_dict=False,
                         )[0]
                     pred = pred.float()
-                    loss = torch.nn.functional.mse_loss(pred, target.float()) / accum
+                    if cfg["min_snr_gamma"]:
+                        snr = alpha / torch.clamp(1.0 - alpha, min=1e-8)
+                        weight = st.min_snr_weight(
+                            snr.float(), cfg["min_snr_gamma"]
+                        )
+                        per_sample = torch.nn.functional.mse_loss(
+                            pred, target.float(), reduction="none"
+                        ).mean(dim=tuple(range(1, pred.dim())))
+                        loss = (per_sample * weight).mean() / accum
+                    else:
+                        loss = (
+                            torch.nn.functional.mse_loss(pred, target.float())
+                            / accum
+                        )
                     loss.backward()
                     step_loss += float(loss.item()) * accum
 
@@ -616,6 +768,7 @@ class SdxlTrainer:
                             f"บันทึก checkpoint step {step + 1}/{cfg['steps']}…"
                         )
                         _write_lora(ckpt, step + 1, final=False)
+                        _save_state(ckpt, step + 1)
 
             if cancel.is_set():
                 raise se.Cancelled()
@@ -628,6 +781,7 @@ class SdxlTrainer:
             se.MODELS_ROOT.mkdir(parents=True, exist_ok=True)
             (se.MODELS_ROOT / "loras").mkdir(parents=True, exist_ok=True)
             _write_lora(out_path, cfg["steps"], final=True)
+            _save_state(out_path, cfg["steps"])
 
             for lora in se.discover_loras():
                 if Path(lora["path"]).resolve() == out_path.resolve():
