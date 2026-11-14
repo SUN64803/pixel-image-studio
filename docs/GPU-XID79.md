@@ -53,10 +53,11 @@ Xid 79 แปลตรงตัวว่า **การ์ดไม่ตอบ�
 จุดสำคัญ: **14:29:54 เกิดตอนการ์ดว่าง** ไม่มีงาน generate/train
 จึงตัดสาเหตุเรื่องโหลดหนัก, VRAM เต็ม, หรือ OOM ออกได้
 
-สถานะล่าสุด (2026-11-13 13:00): หลัง reboot ครั้งสุดท้ายเมื่อ 11-12 13:49
-**ไม่เกิด Xid 79 อีกเลย** (~23 ชั่วโมง) และตอน reboot 11-13 12:56
+สถานะล่าสุด (2026-11-13 14:30): หลัง reboot ครั้งสุดท้ายเมื่อ 11-12 13:49
+**ไม่เกิด Xid 79 อีกเลย** และตอน reboot 11-13 12:56
 ระบบบูตเข้า kernel **7.0.0-43** โดย DKMS build ไดรเวอร์ 580.196.07
 สำหรับ kernel ใหม่ได้สำเร็จ (`dkms status` มีทั้ง 42 และ 43)
+· ตรึง kernel ครบแล้ว **7/7 แพ็กเกจ** (`apt-mark showhold`)
 
 ### 2.2 ลำดับเหตุการณ์ 2026-11-12
 
@@ -273,15 +274,22 @@ ollama ps          # PROCESSOR ควรเป็น 100% CPU
 > **ไม่เกิดขึ้นจริง** แต่ยังควรตรึงไว้เพื่อกันรอบถัดไป
 
 ```bash
-sudo apt-mark hold \
-  linux-generic-7.0 \
-  linux-image-generic-7.0 \
-  linux-image-7.0.0-43-generic \
-  linux-headers-7.0.0-43-generic \
-  linux-headers-generic-7.0 \
-  linux-headers-generic-hwe-24.04
+# หนึ่งคำสั่งต่อบรรทัด — กันปัญหา paste แล้วมีช่องว่างนำหน้าชื่อแพ็กเกจ
+sudo apt-mark hold linux-generic-7.0
+sudo apt-mark hold linux-image-generic-7.0
+sudo apt-mark hold linux-image-7.0.0-43-generic
+sudo apt-mark hold linux-modules-7.0.0-43-generic
+sudo apt-mark hold linux-headers-7.0.0-43-generic
+sudo apt-mark hold linux-headers-generic-7.0
+sudo apt-mark hold linux-headers-generic-hwe-24.04
+
 apt-mark showhold
 ```
+
+> อย่าใช้รูปแบบหลายบรรทัดที่ลงท้ายด้วย `\` แล้วมี indent — ถ้า paste
+> แล้ว backslash หาย ช่องว่างนำหน้าจะกลายเป็นส่วนหนึ่งของชื่อแพ็กเกจ
+> (`E: ไม่พบแพกเกจ  linux-generic-7.0`) ซึ่งไม่ใช่ปัญหาของ apt-mark
+
 
 ข้อแลกเปลี่ยน: จะไม่ได้รับ kernel security update ใหม่จนกว่าจะเอา hold ออก
 ถ้าจะอัปเกรดเอง ให้ปลด hold, ติดตั้ง, แล้ว reboot พร้อมเช็ก `dkms status`

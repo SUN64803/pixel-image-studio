@@ -22,6 +22,19 @@ def client(monkeypatch):
     gate = threading.Event()
     gate.set()  # open → jobs drain immediately
 
+    # Tests must not depend on model weights being installed.  Serve a fake
+    # SANA + SDXL registry so generate/select/hires paths are exercised even
+    # in a clean checkout.
+    from pathlib import Path
+
+    root = Path("/tmp/fake-models")
+    fake_models = [
+        se._model_entry(root / "sana", "sana", "diffusers", root),
+        se._model_entry(root / "sdxl.safetensors", "sdxl", "single", root),
+    ]
+    monkeypatch.setattr(se, "discover_models", lambda: list(fake_models))
+    srv.manager.reload_models()
+
     def fake_generate(self, params, job, cancel):
         job["images"] = []
         gate.wait(timeout=15)

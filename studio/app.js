@@ -650,15 +650,29 @@
   function readLoras() {
     const list = $("#loraList");
     if (!list) return state.settings.loras || [];
-    return $$("#loraList .lora-item")
-      .filter((item) => item.querySelector("input[type=checkbox]").checked)
+    const seen = new Set();
+    const out = $$("#loraList .lora-item")
       .map((item) => {
+        seen.add(item.dataset.id);
+        if (!item.querySelector("input[type=checkbox]").checked) return null;
         const raw = Number(item.querySelector(".lora-weight").value);
         return {
           id: item.dataset.id,
           weight: clamp(Number.isFinite(raw) ? raw : 1, 0, 2),
         };
-      });
+      })
+      .filter(Boolean);
+    // Selected LoRAs hidden by the variant filter must not be dropped when the
+    // form re-reads the list.  Adapters that the new family cannot load are
+    // dropped: keeping them would make the next generation fail.
+    const fam = state.currentModel && state.currentModel.family;
+    for (const l of state.settings.loras || []) {
+      if (!l || !l.id || seen.has(l.id)) continue;
+      const known = (state.loras || []).find((x) => x.id === l.id);
+      if (known && !loraLoadable(known, fam)) continue;
+      out.push(l);
+    }
+    return out;
   }
 
   function regionCapable() {
@@ -674,6 +688,11 @@
   function hiresCapable() {
     const model = state.currentModel;
     return !!(model && model.capabilities && model.capabilities.hires);
+  }
+
+  function enhanceCapable() {
+    const model = state.currentModel;
+    return !!(model && model.capabilities && model.capabilities.enhance);
   }
 
   function readRegionRows() {
@@ -916,12 +935,17 @@
     $("#modelSub").textContent = entry.name || "Image Studio";
     const fam = entry.family_label || (entry.family || "").toUpperCase();
     const kind = entry.kind === "single" ? "checkpoint" : "diffusers";
-    $("#modelFamily").textContent = fam ? `${fam} · ${kind}` : "—";
-    const isSana = entry.family === "sana";
-    $("#enhance").disabled = !isSana;
-    if (!isSana) $("#enhance").checked = false;
+    const warn =
+      entry.supported === false
+        ? ` · ⚠ ${tr(entry.unsupported_reason || "ยังไม่รองรับ")}`
+        : "";
+    $("#modelFamily").textContent = fam ? `${fam} · ${kind}${warn}` : "—";
+    $("#modelFamily").title = warn ? tr(entry.unsupported_reason || "") : "";
+    const canEnhance = !!(entry.capabilities && entry.capabilities.enhance);
+    $("#enhance").disabled = !canEnhance;
+    if (!canEnhance) $("#enhance").checked = false;
     const sw = $("#enhance").closest(".switch");
-    if (sw) sw.title = isSana ? "" : "ตัวเลือกนี้ใช้กับ SANA เท่านั้น";
+    if (sw) sw.title = canEnhance ? "" : "ตัวเลือกนี้ใช้กับโมเดลที่รองรับเท่านั้น";
     if ($("#regionBox")) {
       const rows = readRegionRows();
       const saved = rows.length ? rows : state.settings.regions || [];
@@ -957,7 +981,8 @@
     $("#steps").value = clamp(Number(d.steps) || 20, 2, 50);
     $("#guidance").value = clamp(Number(d.guidance) || 4.5, 1, 10);
     $("#sampler").value = d.sampler === "euler" ? "euler" : "dpm";
-    $("#enhance").checked = entry && entry.family === "sana" ? !!d.enhance : false;
+    $("#enhance").checked =
+      entry && entry.capabilities && entry.capabilities.enhance ? !!d.enhance : false;
     $("#stepsVal").textContent = $("#steps").value;
     $("#cfgVal").textContent = Number($("#guidance").value).toFixed(1);
     updateSizeHint();
@@ -968,6 +993,16 @@
   async function selectModel(id, options = {}) {
     const silent = !!options.silent;
     const applyDefaults = options.applyDefaults !== false;
+    const entry = (state.registry || []).find((m) => m.id === id);
+    if (entry && entry.supported === false) {
+      toast(
+        tr(`โมเดลนี้ใช้ไม่ได้: ${entry.unsupported_reason || "ยังไม่รองรับ"}`),
+        "warn",
+        7000
+      );
+      if ($("#modelSelect")) $("#modelSelect").value = state.currentId || "";
+      return false;
+    }
     try {
       const res = await api("/api/models/select", {
         method: "POST",
@@ -1002,18 +1037,41 @@
         return;
       }
       sel.innerHTML = state.registry
-        .map(
-          (m) =>
-            `<option value="${esc(m.id)}">${esc(m.name)} — ${esc(
-              m.family_label || m.family || ""
-            )}${m.available === false ? " (ยังไม่พร้อม)" : ""}</option>`
-        )
+        .map((m) => {
+          const suffix =
+            m.supported === false
+              ? ` (${tr("ไม่รองรับ")})`
+              : m.available === false
+                ? ` (${tr("ยังไม่พร้อม")})`
+                : "";
+          return `<option value="${esc(m.id)}"${m.supported === false ? " disabled" : ""}>${esc(
+            m.name
+          )} — ${esc(m.family_label || m.family || "")}${suffix}</option>`;
+        })
         .join("");
       const wanted = preferredId || state.settings.model_id;
+      const usable = state.registry.filter((m) => m.supported !== false);
+      if (!usable.length) {
+        sel.insertAdjacentHTML(
+          "afterbegin",
+          `<option value="" selected disabled>${esc(tr("ไม่มีโมเดลที่ใช้งานได้"))}</option>`
+        );
+        state.currentModel = null;
+        state.currentId = "";
+        updateModelMeta({
+          name: "Image Studio",
+          family: "",
+          supported: false,
+          unsupported_reason: tr("ไม่พบโมเดลที่ใช้งานได้ — เพิ่มโมเดลหรือกดสแกนใหม่"),
+        });
+        toast(tr("ไม่พบโมเดลที่ใช้งานได้ — เพิ่มโมเดลหรือกดสแกนใหม่"), "warn", 8000);
+        renderModelVariants();
+        return;
+      }
       const target =
-        state.registry.find((m) => m.id === wanted) ||
-        state.registry.find((m) => m.id === data.current) ||
-        state.registry[0];
+        usable.find((m) => m.id === wanted) ||
+        usable.find((m) => m.id === data.current) ||
+        usable[0];
       sel.value = target.id;
       state.currentModel = target;
       state.currentId = data.current || target.id;
@@ -1025,9 +1083,69 @@
       }
       state.settings.model_id = target.id;
       saveSettings();
+      renderModelVariants();
     } catch (err) {
       toast(`โหลดรายการโมเดลไม่ได้: ${err.message}`, "err", 6000);
     }
+  }
+
+  // ── base-model variants (Pony / Illustrious / …) ─────────────────────────
+  const VARIANT_LABELS = {
+    any: "ใช้ได้ทุกโมเดล",
+    sana: "SANA",
+    sdxl: "SDXL",
+    pony: "Pony",
+    illustrious: "Illustrious",
+    noobai: "NoobAI",
+    sd15: "SD 1.5",
+    sd2: "SD 2.x",
+    sd3: "SD 3 / 3.5",
+    pixart: "PixArt",
+    lumina: "Lumina",
+    lumina2: "Lumina 2",
+    hunyuan: "HunyuanDiT",
+    kolors: "Kolors",
+    auraflow: "AuraFlow",
+    amused: "Amused",
+    cogview3: "CogView3",
+    cogview4: "CogView4",
+    wuerstchen: "Würstchen",
+    generic: "Diffusers",
+    flux: "Flux",
+    chroma: "Chroma",
+  };
+  const VARIANT_CHOICES = Object.keys(VARIANT_LABELS);
+
+  function variantLabel(value, fallback) {
+    const raw = VARIANT_LABELS[value] || value || fallback || "";
+    return raw ? tr(raw) : "";
+  }
+
+  function modelVariant() {
+    const m = state.currentModel || {};
+    return m.variant || m.family || "any";
+  }
+
+  // Adapters that the current engine family can actually load.
+  function loraLoadable(l, fam) {
+    if (!l) return true;
+    if (l.variant === "flux" || l.variant === "chroma") return false;
+    return !fam || !l.family || l.family === "any" || l.family === fam;
+  }
+
+  // A LoRA tagged "any" works everywhere.  A LoRA whose variant was only
+  // guessed from the engine family (plain "SDXL", source=family) is unverified
+  // but usually fine — show it.  Only a positively detected different lineage
+  // (name/metadata/override) is a real mismatch.
+  function loraFitsModel(l, fam, variant) {
+    const lv = l.variant || "any";
+    // Flux/Chroma adapters can never load into SANA/SDXL/SD1.5 pipelines.
+    if (lv === "flux" || lv === "chroma") return false;
+    if (!fam || !l.family || l.family === "any") return true;
+    if (l.family !== fam) return false;
+    if (lv === "any") return true;
+    if (l.variant_source === "family") return true;
+    return lv === variant;
   }
 
   function renderLoras(selected) {
@@ -1035,9 +1153,19 @@
     const list = $("#loraList");
     if (!box || !list) return;
     const fam = state.currentModel && state.currentModel.family;
-    const items = (state.loras || []).filter(
+    const variant = modelVariant();
+    const showAll = !!($("#loraShowAll") && $("#loraShowAll").checked);
+    const all = (state.loras || []).filter(
       (l) => !fam || !l.family || l.family === "any" || l.family === fam
     );
+    if (!all.length) {
+      box.classList.add("hidden");
+      list.innerHTML = "";
+      return;
+    }
+    const fitting = all.filter((l) => loraFitsModel(l, fam, variant));
+    const mismatched = all.filter((l) => !loraFitsModel(l, fam, variant));
+    const items = showAll ? fitting.concat(mismatched) : fitting;
     const source = Array.isArray(selected) ? selected : state.settings.loras || [];
     const chosen = new Map(
       source.map((x) => {
@@ -1045,23 +1173,25 @@
         return [x.id, Number.isFinite(w) ? w : 1];
       })
     );
+    box.classList.remove("hidden");
     if (!items.length) {
-      box.classList.add("hidden");
-      list.innerHTML = "";
+      list.innerHTML = `<p class="micro">${esc(
+        tr('ไม่มี LoRA ที่ตรงกับ variant นี้ — เปิด "แสดง LoRA ที่ไม่ตรง variant" เพื่อดูรายการ')
+      )}</p>`;
       return;
     }
-    box.classList.remove("hidden");
     list.innerHTML = items
       .map((l) => {
         const on = chosen.has(l.id);
         const weight = on ? chosen.get(l.id) : 1;
-        const tag = l.family ? l.family_label || String(l.family).toUpperCase() : "any";
-        return `<div class="lora-item" data-id="${esc(l.id)}">
+        const mismatch = !loraFitsModel(l, fam, variant);
+        const tag = variantLabel(l.variant, l.family_label || l.family);
+        return `<div class="lora-item${mismatch ? " lora-mismatch" : ""}" data-id="${esc(l.id)}">
           <label class="lora-check">
             <input type="checkbox" value="${esc(l.id)}" ${on ? "checked" : ""}>
             <span>${esc(l.name)}</span>
           </label>
-          <span class="lora-tag">${esc(tag)}</span>
+          <span class="lora-tag">${mismatch ? "⚠ " : ""}${esc(tag)}</span>
           <input type="number" class="lora-weight" min="0" max="2" step="0.05"
             value="${esc(weight)}" title="น้ำหนัก LoRA" ${on ? "" : "disabled"}>
         </div>`;
@@ -1112,9 +1242,11 @@
         if (Number.isFinite(Number(s.steps))) bits.push(`${s.steps} steps`);
         const loraCount = (s.loras || []).length;
         if (loraCount) bits.push(`${loraCount} LoRA`);
+        const issues = [...(s.ignored || []), ...(s.notes || [])];
         return `<div class="preset-item" data-id="${esc(p.id)}">
           <button type="button" class="preset-name" title="คลิกเพื่อใช้พรีเซ็ต">${esc(p.name)}</button>
           <span class="preset-meta">${esc(bits.join(" · "))}</span>
+          ${issues.length ? `<span class="lora-tag" title="${esc(issues.join(" · "))}">⚠ ${issues.length}</span>` : ""}
           <button type="button" class="ghost-icon preset-del" data-id="${esc(p.id)}" title="ลบพรีเซ็ต">✕</button>
         </div>`;
       })
@@ -1142,15 +1274,51 @@
     });
   }
 
+  function normLoraName(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/\.safetensors$/, "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .pop()
+      .replace(/[\s_\-]+/g, " ")
+      .trim();
+  }
+
+  // A1111/Forge tags often keep sub-folders (`<lora:styles/foo:0.8>`) or lose
+  // the exact spacing of the local file name, so match a bit more loosely.
+  function resolveLora(name) {
+    const key = normLoraName(name);
+    if (!key) return null;
+    const list = state.loras || [];
+    const exact = list.find((x) => normLoraName(x.name) === key);
+    if (exact) return exact;
+    const tail = String(name || "")
+      .replace(/\.safetensors$/i, "")
+      .replace(/\\/g, "/")
+      .toLowerCase();
+    const byPath = list.find((x) =>
+      String(x.path || "")
+        .toLowerCase()
+        .replace(/\.safetensors$/, "")
+        .endsWith("/" + tail)
+    );
+    if (byPath) return byPath;
+    const cands = list.filter((x) => {
+      const n = normLoraName(x.name);
+      return n && (n.includes(key) || key.includes(n));
+    });
+    return cands.length === 1 ? cands[0] : null;
+  }
+
   async function applyPreset(p) {
     const s = p.settings || {};
     const missing = [];
+    const warnings = [];
     const overrides = { prompt: p.prompt || "", negative_prompt: p.negative || "" };
     const sel = (s.loras || [])
       .map((l) => {
-        const found = (state.loras || []).find(
-          (x) => String(x.name).toLowerCase() === String(l.name).toLowerCase()
-        );
+        const found = resolveLora(l.name);
         if (!found) {
           missing.push(l.name);
           return null;
@@ -1170,6 +1338,8 @@
       if (found) {
         // pass the id through so applyForm can't revert it from a stale select
         overrides.model_id = found.id;
+      } else {
+        warnings.push(tr(`โมเดล "${s.model}" ไม่มีในระบบ`));
       }
     }
     if (Number.isFinite(Number(s.width))) overrides.width = s.width;
@@ -1178,15 +1348,33 @@
     if (Number.isFinite(Number(s.guidance))) overrides.guidance = s.guidance;
     if (s.sampler) overrides.sampler = s.sampler;
     if (Number(s.seed) >= 0) overrides.seed = Number(s.seed);
+    const fam = state.currentModel && state.currentModel.family;
+    const variant = modelVariant();
+    // Adapters from another family cannot load at all; keep them out of the
+    // form (they are still reported below).  Same-family variant mismatches
+    // stay selected so the user can decide.
+    const usable = sel.filter((x) => {
+      const l = (state.loras || []).find((y) => y.id === x.id);
+      return loraLoadable(l, fam);
+    });
     applyForm({ ...readForm(), ...overrides });
-    if (sel.length) {
-      state.settings.loras = sel;
-      renderLoras(sel);
-    }
+    // A preset without LoRAs must clear the current ones instead of keeping
+    // whatever happened to be ticked before.
+    state.settings.loras = usable;
+    renderLoras(usable);
     toast(tr(`ใช้พรีเซ็ตแล้ว: ${p.name}`), "ok", 2600);
-    if (missing.length) {
-      toast(tr(`LoRA ในพรีเซ็ตไม่มีในระบบ: ${missing.join(", ")}`), "warn", 6000);
-    }
+    if (missing.length) warnings.push(tr(`LoRA ไม่มีในระบบ: ${missing.join(", ")}`));
+    const offVariant = sel
+      .map((x) => (state.loras || []).find((l) => l.id === x.id))
+      .filter((l) => l && !loraFitsModel(l, fam, variant))
+      .map((l) => l.name);
+    if (offVariant.length)
+      warnings.push(tr(`LoRA ไม่ตรง variant: ${offVariant.join(", ")}`));
+    if (s.ignored && s.ignored.length)
+      warnings.push(tr(`นำเข้าไม่ได้: ${s.ignored.join(", ")}`));
+    if (s.notes && s.notes.length)
+      warnings.push(tr(`ปรับค่า: ${s.notes.join(" · ")}`));
+    if (warnings.length) toast(warnings.join(" · "), "warn", 9000);
   }
 
   async function saveCurrentPreset() {
@@ -1327,9 +1515,7 @@
 
   // ── LoRA trainer ────────────────────────────────────────────────────────
   function trainerModels() {
-    return (state.registry || []).filter(
-      (m) => m.family === "sana" || m.family === "sdxl"
-    );
+    return (state.registry || []).filter((m) => m.trainable && m.supported !== false);
   }
 
   function currentTrainerModel() {
@@ -1338,7 +1524,7 @@
       return (state.registry || []).find((m) => m.id === sel.value) || null;
     }
     const cur = state.currentModel;
-    if (cur && (cur.family === "sana" || cur.family === "sdxl")) return cur;
+    if (cur && cur.trainable && cur.supported !== false) return cur;
     return trainerModels()[0] || null;
   }
 
@@ -1373,7 +1559,7 @@
         .join("");
     if (prev && models.some((m) => m.id === prev)) sel.value = prev;
     const cur = state.currentModel;
-    if (!sel.value && (!cur || !["sana", "sdxl"].includes(cur.family))) {
+    if (!sel.value && (!cur || !cur.trainable)) {
       const first = models[0];
       if (first) sel.value = first.id;
     }
@@ -1885,6 +2071,35 @@
     }
   }
 
+  function variantOptions(item) {
+    const auto = `${tr("อัตโนมัติ")} (${variantLabel(item.variant, item.family_label || item.family)})`;
+    const opts = [
+      `<option value="" ${item.variant_source === "override" ? "" : "selected"}>${esc(auto)}</option>`,
+    ];
+    for (const v of VARIANT_CHOICES) {
+      const sel = item.variant_source === "override" && item.variant === v ? "selected" : "";
+      opts.push(`<option value="${v}" ${sel}>${esc(variantLabel(v))}</option>`);
+    }
+    return opts.join("");
+  }
+
+  function bindVariantSelects(root, after) {
+    $$(`${root} .lora-variant`).forEach((sel) => {
+      sel.addEventListener("change", async () => {
+        try {
+          await api("/api/variants", {
+            method: "POST",
+            body: JSON.stringify({ path: sel.dataset.path, variant: sel.value }),
+          });
+          await after();
+          toast(tr("อัปเดต variant แล้ว"), "ok", 1800);
+        } catch (err) {
+          toast(err.message, "err", 5000);
+        }
+      });
+    });
+  }
+
   function renderLoraManager() {
     const box = $("#loraManagerBox");
     const list = $("#loraManagerList");
@@ -1899,6 +2114,9 @@
               <span class="lora-name">${esc(l.name)}</span>
               <span class="lora-tag">${esc(tag)}</span>
               <span class="lora-size">${esc(((l.size || 0) / 1024 / 1024).toFixed(1))} MB</span>
+              <select class="lora-variant" data-path="${esc(l.path || "")}" title="แก้ variant ของ LoRA">
+                ${variantOptions(l)}
+              </select>
               <button type="button" class="ghost-icon" data-id="${esc(l.id)}" title="ลบ LoRA">
                 <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 3h6a1 1 0 0 1 1 1v2h4v2h-1v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6H3V4h4V3Zm1 2v2h4V5H10Zm-3 3v12h10V7H7Zm3 3a1 1 0 0 1 1 1v6a1 1 0 0 1-2 0v-6a1 1 0 0 1 1-1Zm4 0a1 1 0 0 1 1 1v6a1 1 0 0 1-2 0v-6a1 1 0 0 1 1-1Z"/></svg>
               </button>
@@ -1906,6 +2124,9 @@
           })
           .join("")
       : `<p class="micro">ยังไม่มี LoRA — นำเข้าไฟล์ .safetensors ด้านบน</p>`;
+    bindVariantSelects("#loraManagerList", async () => {
+      await refreshLoras();
+    });
     $$("#loraManagerList .lora-item button[data-id]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const id = btn.dataset.id;
@@ -1921,6 +2142,29 @@
     });
   }
 
+  function renderModelVariants() {
+    const list = $("#modelVariantList");
+    if (!list) return;
+    const models = state.registry || [];
+    list.innerHTML = models.length
+      ? models
+          .map(
+            (m) => `<div class="lora-item" data-id="${esc(m.id)}">
+              <span class="lora-name">${esc(m.name)}</span>
+              <span class="lora-tag">${esc(m.family_label || m.family || "")}</span>
+              <select class="lora-variant" data-path="${esc(m.path || "")}" title="แก้ variant ของโมเดล">
+                ${variantOptions(m)}
+              </select>
+            </div>`
+          )
+          .join("")
+      : `<p class="micro">—</p>`;
+    bindVariantSelects("#modelVariantList", async () => {
+      await refreshModels(state.currentId || undefined);
+      await refreshLoras();
+    });
+  }
+
   async function onModelChange(event) {
     if (state.busy) {
       event.target.value = state.currentId || "";
@@ -1928,7 +2172,13 @@
     }
     const keep = readLoras();
     const ok = await selectModel(event.target.value, { applyDefaults: true });
-    if (ok) renderLoras(keep);
+    if (ok) {
+      renderLoras(keep);
+      // Drop adapters from the previous family; keep same-family ones that the
+      // variant filter may be hiding.
+      state.settings.loras = readLoras();
+      saveSettings();
+    }
   }
 
   function setLoraDisabled(disabled) {
@@ -2629,12 +2879,20 @@
 
     $("#lbImage").src = img.url;
     $("#lbImage").alt = params.prompt || "generated image";
+    const scale = Number($("#lbUpscaleScale") && $("#lbUpscaleScale").value) === 2 ? 2 : 4;
     const srcW = img.width || params.width || 0;
+    const srcH = img.height || params.height || 0;
     const canUpscale = !srcW || srcW <= 2048;
     $("#lbUpscale").disabled = !canUpscale;
+    $("#lbUpscale").textContent = tr(
+      scale === 2 ? "ขยาย 2× (ESRGAN)" : "ขยาย 4× (ESRGAN)"
+    );
     $("#lbUpscale").title = canUpscale
       ? "ขยายด้วย Real-ESRGAN (คุณภาพสูงกว่า LANCZOS)"
       : "ภาพใหญ่เกินไปสำหรับขยาย 4× (สูงสุด 8192px)";
+    $("#lbUpscaleSize").textContent = srcW
+      ? `${srcW}×${srcH || srcW} → ${srcW * scale}×${(srcH || srcW) * scale}`
+      : "";
     $("#lbCounter").textContent =
       images.length > 1 ? `${index + 1} / ${images.length}` : "";
     $("#lbPrev").disabled = images.length <= 1;
@@ -2712,14 +2970,19 @@
     const btn = $("#lbUpscale");
     if (btn.disabled) return;
     const label = btn.textContent;
+    const scale =
+      Number($("#lbUpscaleScale") && $("#lbUpscaleScale").value) === 2 ? 2 : 4;
+    const tileRaw = Number($("#lbUpscaleTile") && $("#lbUpscaleTile").value);
+    const body = { file: img.file, scale };
+    if (Number.isFinite(tileRaw) && tileRaw > 0) body.tile = tileRaw;
     btn.disabled = true;
     btn.textContent = "กำลังขยาย…";
     try {
       const res = await api("/api/upscale", {
         method: "POST",
-        body: JSON.stringify({ file: img.file, scale: 4 }),
+        body: JSON.stringify(body),
       });
-      toast("กำลังขยายภาพด้วย ESRGAN…", "ok", 3000);
+      toast(tr(`กำลังขยายภาพด้วย ESRGAN ${scale}×…`), "ok", 3000);
       const job = await waitForJob(res.job_id);
       if (job.status === "done") toast("ขยายภาพเสร็จแล้ว", "ok", 2500);
       else if (job.status === "canceled") toast("ยกเลิกการขยายแล้ว", "warn", 2500);
@@ -3540,6 +3803,9 @@
     $("#loraList").addEventListener("input", (event) => {
       if (event.target.classList.contains("lora-weight")) scheduleSave();
     });
+    if ($("#loraShowAll")) {
+      $("#loraShowAll").addEventListener("change", () => renderLoras(readLoras()));
+    }
     if ($("#loraImportBtn")) {
       $("#loraImportBtn").addEventListener("click", async () => {
         const input = $("#loraImportFile");
@@ -4204,6 +4470,23 @@
       await refreshHealth();
       toast("โหลดข้อมูลใหม่แล้ว", "ok", 1600);
     });
+    if ($("#modelRescan")) {
+      $("#modelRescan").addEventListener("click", async () => {
+        if (state.busy) {
+          toast(tr("มีงานกำลังทำงานอยู่ — รอให้เสร็จก่อน"), "warn", 4000);
+          return;
+        }
+        const before = (state.registry || []).length;
+        await refreshModels(state.currentId || undefined);
+        await refreshLoras();
+        const after = (state.registry || []).length;
+        toast(
+          tr(`สแกนโมเดลแล้ว: พบ ${after} รายการ${after > before ? ` (+${after - before})` : ""}`),
+          "ok",
+          4000
+        );
+      });
+    }
     $("#openFolder").addEventListener("click", async () => {
       try {
         await api("/api/open-folder?which=images", { method: "POST" });
@@ -4220,6 +4503,9 @@
     $("#lbPrev").addEventListener("click", () => stepLightbox(-1));
     $("#lbNext").addEventListener("click", () => stepLightbox(1));
     $("#lbUpscale").addEventListener("click", upscaleCurrent);
+    $("#lbUpscaleScale").addEventListener("change", () => {
+      if (state.lb) renderLightbox();
+    });
     $("#lbDownload").addEventListener("click", () => {
       if (state.lb) downloadImage(state.lb.record.images[state.lb.index]);
     });

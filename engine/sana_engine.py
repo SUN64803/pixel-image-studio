@@ -14,8 +14,10 @@ transformer (see convert_pth_to_transformer / prepare_model.py --from-pth).
 """
 from __future__ import annotations
 
+import functools
 import gc
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -74,17 +76,242 @@ _EXTRA_MODEL_DIRS, _EXTRA_LORA_DIRS = _extra_dirs()
 MODEL_SCAN_DIRS = [MODELS_ROOT, MODELS_ROOT / "checkpoints", *_EXTRA_MODEL_DIRS]
 LORA_SCAN_DIRS = [MODELS_ROOT / "loras", *_EXTRA_LORA_DIRS]
 
-FAMILY_DEFAULTS = {
-    "sana": {"width": 1024, "height": 1024, "steps": 20, "guidance": 4.5, "sampler": "dpm", "enhance": True},
-    "sdxl": {"width": 1024, "height": 1024, "steps": 28, "guidance": 5.0, "sampler": "dpm", "enhance": False},
-    "sd15": {"width": 512, "height": 512, "steps": 25, "guidance": 7.0, "sampler": "dpm", "enhance": False},
+# ── model families ──────────────────────────────────────────────────────────
+# `family` is the architecture profile the engine knows how to run.  The list
+# is not limited to the models we happen to have tested: any diffusers pipeline
+# directory whose `_class_name` exists in the installed diffusers build is
+# listed as family="generic" and loaded with that class.  `supported=False`
+# entries are still shown in the UI (with a reason) instead of disappearing —
+# notably Flux/Chroma, whose 9–12B weights do not fit 10 GB VRAM / 15 GB RAM.
+def _caps(
+    enhance: bool = False,
+    regional: bool = False,
+    inpaint: bool = False,
+    hires: bool = False,
+    negative: bool = True,
+    lora: bool = True,
+) -> dict:
+    return {
+        "negative_prompt": negative,
+        "enhance": enhance,
+        "lora": lora,
+        "regional": regional,
+        "inpaint": inpaint,
+        "hires": hires,
+        "samplers": ["dpm", "euler"],
+    }
+
+
+def _defaults(width: int, height: int, steps: int, guidance: float, enhance: bool = False) -> dict:
+    return {
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "guidance": guidance,
+        "sampler": "dpm",
+        "enhance": enhance,
+    }
+
+
+_TOO_HEAVY = (
+    "ต้องใช้ VRAM/RAM มากกว่าที่การ์ดนี้มี (10 GB VRAM / 15 GB RAM) — "
+    "Flux/Chroma ~9–12B ต้องรัน fp8 ซึ่ง GPU นี้ไม่รองรับ"
+)
+
+FAMILY_PROFILES: dict[str, dict] = {
+    "sana": {
+        "label": "SANA",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 20, 4.5, True),
+        "caps": _caps(enhance=True, hires=True),
+    },
+    "sdxl": {
+        "label": "SDXL",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(1024, 1024, 28, 5.0),
+        "caps": _caps(regional=True, inpaint=True, hires=True),
+    },
+    "sd15": {
+        "label": "SD 1.5",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(512, 512, 25, 7.0),
+        "caps": _caps(hires=True),
+    },
+    "sd2": {
+        "label": "SD 2.x",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(768, 768, 25, 7.5),
+        "caps": _caps(hires=True),
+    },
+    "sd3": {
+        "label": "SD 3 / 3.5",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 28, 4.5),
+        "caps": _caps(hires=True),
+    },
+    "pixart": {
+        "label": "PixArt",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(1024, 1024, 20, 4.5),
+        "caps": _caps(),
+    },
+    "lumina": {
+        "label": "Lumina",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 30, 4.0),
+        "caps": _caps(),
+    },
+    "lumina2": {
+        "label": "Lumina 2",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 30, 4.0),
+        "caps": _caps(),
+    },
+    "hunyuan": {
+        "label": "HunyuanDiT",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 30, 5.0),
+        "caps": _caps(),
+    },
+    "kolors": {
+        "label": "Kolors",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(1024, 1024, 28, 5.0),
+        "caps": _caps(hires=True),
+    },
+    "auraflow": {
+        "label": "AuraFlow",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 25, 3.5),
+        "caps": _caps(),
+    },
+    "amused": {
+        "label": "Amused",
+        "supported": True,
+        "dtype": "float16",
+        "defaults": _defaults(512, 512, 12, 3.5),
+        "caps": _caps(),
+    },
+    "cogview3": {
+        "label": "CogView3",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 50, 5.0),
+        "caps": _caps(),
+    },
+    "cogview4": {
+        "label": "CogView4",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 30, 5.0),
+        "caps": _caps(),
+    },
+    "wuerstchen": {
+        "label": "Würstchen",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 30, 4.0),
+        "caps": _caps(),
+    },
+    "generic": {
+        "label": "Diffusers",
+        "supported": True,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 28, 4.5),
+        "caps": _caps(),
+    },
+    "flux": {
+        "label": "Flux",
+        "supported": False,
+        "reason": _TOO_HEAVY,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 20, 3.5),
+        "caps": _caps(),
+    },
+    "chroma": {
+        "label": "Chroma",
+        "supported": False,
+        "reason": _TOO_HEAVY,
+        "dtype": "bfloat16",
+        "defaults": _defaults(1024, 1024, 20, 3.5),
+        "caps": _caps(),
+    },
+    "unknown": {
+        "label": "Unknown",
+        "supported": False,
+        "reason": "ตรวจไม่พบสถาปัตยกรรมที่รองรับ",
+        "dtype": "float16",
+        "defaults": _defaults(1024, 1024, 28, 4.5),
+        "caps": _caps(),
+    },
 }
-FAMILY_LABEL = {"sana": "SANA", "sdxl": "SDXL", "sd15": "SD 1.5"}
-CAPABILITIES = {
-    "sana": {"negative_prompt": True, "enhance": True, "lora": True, "regional": False, "inpaint": False, "hires": True, "samplers": ["dpm", "euler"]},
-    "sdxl": {"negative_prompt": True, "enhance": False, "lora": True, "regional": True, "inpaint": True, "hires": True, "samplers": ["dpm", "euler"]},
-    "sd15": {"negative_prompt": True, "enhance": False, "lora": True, "regional": False, "inpaint": False, "hires": True, "samplers": ["dpm", "euler"]},
+
+FAMILY_DEFAULTS = {k: v["defaults"] for k, v in FAMILY_PROFILES.items()}
+FAMILY_LABEL = {k: v["label"] for k, v in FAMILY_PROFILES.items()}
+CAPABILITIES = {k: v["caps"] for k, v in FAMILY_PROFILES.items()}
+
+# Text-to-image / img2img classes per family.  `generic` entries carry the
+# class name discovered from model_index.json instead.
+PIPELINE_CLASSES: dict[str, dict[str, str]] = {
+    "sana": {"t2i": "SanaPipeline"},
+    "sdxl": {
+        "t2i": "StableDiffusionXLPipeline",
+        "img2img": "StableDiffusionXLImg2ImgPipeline",
+        "inpaint": "StableDiffusionXLInpaintPipeline",
+    },
+    "sd15": {
+        "t2i": "StableDiffusionPipeline",
+        "img2img": "StableDiffusionImg2ImgPipeline",
+    },
+    "sd2": {
+        "t2i": "StableDiffusionPipeline",
+        "img2img": "StableDiffusionImg2ImgPipeline",
+    },
+    "sd3": {
+        "t2i": "StableDiffusion3Pipeline",
+        "img2img": "StableDiffusion3Img2ImgPipeline",
+    },
+    "flux": {"t2i": "FluxPipeline", "img2img": "FluxImg2ImgPipeline"},
+    "chroma": {"t2i": "ChromaPipeline", "img2img": "ChromaImg2ImgPipeline"},
+    "pixart": {"t2i": "PixArtSigmaPipeline"},
+    "lumina": {"t2i": "LuminaText2ImgPipeline"},
+    "lumina2": {"t2i": "Lumina2Text2ImgPipeline"},
+    "hunyuan": {"t2i": "HunyuanDiTPipeline"},
+    "kolors": {"t2i": "KolorsPipeline", "img2img": "KolorsImg2ImgPipeline"},
+    "auraflow": {"t2i": "AuraFlowPipeline"},
+    "amused": {"t2i": "AmusedPipeline", "img2img": "AmusedImg2ImgPipeline"},
+    "cogview3": {"t2i": "CogView3PlusPipeline"},
+    "cogview4": {"t2i": "CogView4Pipeline"},
+    "wuerstchen": {"t2i": "WuerstchenCombinedPipeline"},
 }
+
+# Families whose single-file (.safetensors) checkpoints can be loaded by
+# diffusers.  SanaPipeline / PixArt / Lumina / HunyuanDiT have no
+# `from_single_file`, so those need a diffusers directory.
+SINGLE_FILE_FAMILIES = {"sdxl", "sd15", "sd2", "sd3", "flux", "chroma"}
+
+# Families with a LoRA trainer in this app.  `sana_trainer` is the generic one
+# (SANA + diffusers layouts) and `sdxl_trainer` handles SDXL checkpoints.
+TRAINABLE_FAMILIES = ("sana", "sdxl")
+
+HIRES_FAMILIES = tuple(
+    k
+    for k, v in FAMILY_PROFILES.items()
+    if v["caps"]["hires"]
+    and v["supported"]
+    and (k == "sana" or "img2img" in PIPELINE_CLASSES.get(k, {}))
+)
 
 # torch is imported lazily so `prepare_model.py --check` and the web server can
 # print helpful diagnostics even when the venv is not installed yet.
@@ -165,11 +392,71 @@ def files_ready(model_dir: Path | None = None) -> bool:
 
 
 # ── model / LoRA discovery ───────────────────────────────────────────────────
+# diffusers `_class_name` → engine family.  Anything else that exists in the
+# installed diffusers build is loaded as family="generic" (see
+# `_dir_info`), so new architectures do not need a code change.
 _DIFFUSERS_FAMILY = {
     "SanaPipeline": "sana",
     "StableDiffusionXLPipeline": "sdxl",
     "StableDiffusionPipeline": "sd15",
+    "StableDiffusion3Pipeline": "sd3",
+    "PixArtSigmaPipeline": "pixart",
+    "PixArtAlphaPipeline": "pixart",
+    "LuminaPipeline": "lumina",
+    "LuminaText2ImgPipeline": "lumina",
+    "Lumina2Pipeline": "lumina2",
+    "Lumina2Text2ImgPipeline": "lumina2",
+    "HunyuanDiTPipeline": "hunyuan",
+    "KolorsPipeline": "kolors",
+    "AuraFlowPipeline": "auraflow",
+    "AmusedPipeline": "amused",
+    "CogView3PlusPipeline": "cogview3",
+    "CogView4Pipeline": "cogview4",
+    "WuerstchenCombinedPipeline": "wuerstchen",
+    "FluxPipeline": "flux",
+    "ChromaPipeline": "chroma",
 }
+
+# Pipelines that are not image generators (video/audio/editing).  They are
+# skipped so a folder of video models does not clutter the picker.
+_NON_IMAGE_HINTS = (
+    "video",
+    "audio",
+    "music",
+    "image2video",
+    "imagetovideo",
+    "img2video",
+    "videotovideo",
+    "texttovideo",
+    "skyreels",
+    "animatediff",
+    "cosmos",
+    "ltx",
+    "wan",
+    "mochi",
+    "hunyuanvideo",
+    "easyanimate",
+    "stablevideo",
+    "i2vgen",
+    "latte",
+    "allegro",
+    "cogvideox",
+    "visualcloze",
+    "omnigen",
+    "depth",
+    "intrinsics",
+    "normals",
+    "superresolution",
+    "upscale",
+    "controlnet",
+    "adapter",
+    "inpaint",
+    "img2img",
+    "imagevariation",
+    "prior",
+    "decoder",
+    "control",
+)
 
 
 def _slug(path: Path, family: str) -> str:
@@ -191,9 +478,31 @@ def _safetensors_keys(path: Path, limit: int = 400) -> list[str]:
 
 
 def _family_from_keys(keys: list[str]) -> str | None:
+    """Detect the architecture from safetensors tensor names.
+
+    The order matters: Chroma also has FLUX-style `double_blocks`, PixArt also
+    has a `caption_projection` like SANA, and SD 2.x shares SD 1.5's layout.
+    """
     blob = " ".join(keys).lower()
+    # Chroma (FLUX.1-schnell derivative) — distilled guidance is unique to it.
+    if "distilled_guidance_layer" in blob:
+        return "chroma"
+    # FLUX — unsupported on this GPU but identified so its LoRAs are never
+    # offered to an SDXL/SANA pipeline.
     if "single_transformer_blocks" in blob or "double_blocks" in blob:
-        return None  # Flux — unsupported (too heavy for 10 GB)
+        return "flux"
+    # AuraFlow
+    if "double_layers" in blob or "single_layers" in blob:
+        return "auraflow"
+    # SD 3 / 3.5 (MMDiT + CLIP-L/CLIP-G/T5)
+    if "joint_blocks" in blob or "lora_te3" in blob or "text_encoder_3" in blob:
+        return "sd3"
+    # Lumina / Lumina 2
+    if "noise_refiner" in blob or "context_refiner" in blob or "cap_embedder" in blob:
+        return "lumina"
+    # SDXL markers must be checked before PixArt/SANA: SDXL transformer blocks
+    # also use `ff.net.0.proj` (GEGLU), and a kohya SDXL LoRA can be recognised
+    # by its text encoder 2 / label embedding / block layout.
     if "conditioner.embedders.1" in blob or "lora_te2" in blob or "text_encoder_2" in blob:
         return "sdxl"
     # Diffusers-format SDXL LoRA (what our SDXL trainer writes):
@@ -203,10 +512,37 @@ def _family_from_keys(keys: list[str]) -> str | None:
         "down_blocks" in blob or "mid_block" in blob or "up_blocks" in blob
     ):
         return "sdxl"
-    if "caption_projection" in blob or "ff.conv_inverted" in blob:
+    # Kohya SDXL LoRA: transformer_blocks live inside input/middle/output
+    # blocks (SD 1.5 only has one in the middle block).  `label_emb` (the
+    # size/negative-original embedding) is also SDXL-only.
+    if (
+        "lora_unet_input_blocks_4_1_transformer_blocks" in blob
+        or "lora_unet_middle_block_1_transformer_blocks" in blob
+        or "label_emb" in blob
+        or ("lora_unet_output_blocks_" in blob and "transformer_blocks" in blob)
+    ):
+        return "sdxl"
+    # SANA (DC-AE latent 32×): conv feed-forward / caption_norm / time_embed
+    if (
+        "ff.conv_inverted" in blob
+        or "ff.conv_depth" in blob
+        or "caption_norm" in blob
+        or "time_embed.emb.timestep_embedder" in blob
+    ):
+        return "sana"
+    # PixArt (also has caption_projection, but uses adaln_single + ff.net)
+    if "adaln_single" in blob or "ff.net.0.proj" in blob:
+        return "pixart"
+    # Older heuristic kept for checkpoints that only expose the caption
+    # projection (SANA LoRAs with attention adapters only).
+    if "caption_projection" in blob:
         return "sana"
     if "transformer_blocks" in blob and ("transformer." in blob or "attn1." in blob):
         return "sana"
+    # SD 2.x uses an OpenCLIP text encoder (`cond_stage_model.model…`), while
+    # SD 1.x uses `cond_stage_model.transformer.text_model…`.
+    if "cond_stage_model.model" in blob:
+        return "sd2"
     if "lora_te_text_model" in blob or "cond_stage_model" in blob:
         return "sd15"
     if "lora_unet" in blob:
@@ -214,12 +550,78 @@ def _family_from_keys(keys: list[str]) -> str | None:
     return None
 
 
-def _family_from_dir(path: Path) -> str | None:
+def _read_json(path: Path) -> dict:
     try:
-        cfg = json.loads((path / "model_index.json").read_text("utf-8"))
+        data = json.loads(path.read_text("utf-8"))
     except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _dir_class_name(path: Path) -> str:
+    return str(_read_json(path / "model_index.json").get("_class_name") or "")
+
+
+def _dir_sample_size(path: Path) -> int | None:
+    for sub in ("unet", "transformer"):
+        value = _read_json(path / sub / "config.json").get("sample_size")
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def _resolution_from_dir(path: Path, family: str) -> int | None:
+    """Guess the native resolution from the UNet/transformer sample size."""
+    ss = _dir_sample_size(path)
+    if not ss:
         return None
-    return _DIFFUSERS_FAMILY.get(cfg.get("_class_name") or "")
+    factor = 32 if family == "sana" else 8
+    px = ss * factor
+    if px >= 768:
+        return 1024
+    if px >= 640:
+        return 768
+    return 512
+
+
+@functools.lru_cache(maxsize=None)
+def _diffusers_has_class(name: str) -> bool:
+    try:
+        import diffusers
+
+        cls = getattr(diffusers, name, None)
+        return bool(cls and hasattr(cls, "from_pretrained"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _dir_info(path: Path) -> tuple[str | None, str, str]:
+    """Return (family, pipeline_class, reason) for a diffusers directory."""
+    class_name = _dir_class_name(path)
+    if not class_name:
+        return None, "", "model_index.json ไม่มี _class_name"
+    family = _DIFFUSERS_FAMILY.get(class_name)
+    if family:
+        return family, class_name, ""
+    lowered = class_name.lower()
+    if any(hint in lowered for hint in _NON_IMAGE_HINTS):
+        return None, class_name, f"ไม่ใช่ pipeline สร้างภาพ ({class_name})"
+    if not _diffusers_has_class(class_name):
+        return None, class_name, f"diffusers ที่ติดตั้งไม่รู้จัก {class_name}"
+    # Any other installed text-to-image pipeline runs through the generic
+    # profile — that is what keeps new architectures usable without a code
+    # change.  img2img/hires stays off because we cannot assume a matching
+    # img2img class exists.
+    return "generic", class_name, ""
+
+
+def _family_from_dir(path: Path) -> str | None:
+    family, _cls, _reason = _dir_info(path)
+    if family == "sd15":
+        # SD 2.x shares StableDiffusionPipeline but uses 768px + OpenCLIP.
+        if (_dir_sample_size(path) or 0) >= 96:
+            return "sd2"
+    return family
 
 
 def _family_from_file(path: Path) -> str | None:
@@ -232,27 +634,232 @@ def _family_from_file(path: Path) -> str | None:
         return None
 
 
-def _model_entry(path: Path, family: str, kind: str, source: Path) -> dict:
+# ── base-model variants (Pony / Illustrious / NoobAI …) ─────────────────────
+# `family` is what the engine can load (sana / sdxl / sd15).  `variant` is the
+# checkpoint lineage an adapter was trained on: two SDXL checkpoints can share
+# no compatible LoRAs (Pony vs Illustrious), yet kohya writes
+# `ss_base_model_version: sdxl_base_v1-0` for both.  So we combine filename
+# hints, metadata hints and a manual override in data/variants.json.
+
+VARIANT_LABEL = {
+    "any": "ใช้ได้ทุกโมเดล",
+    "sana": "SANA",
+    "sdxl": "SDXL",
+    "pony": "Pony",
+    "illustrious": "Illustrious",
+    "noobai": "NoobAI",
+    "sd15": "SD 1.5",
+    "sd2": "SD 2.x",
+    "sd3": "SD 3 / 3.5",
+    "pixart": "PixArt",
+    "lumina": "Lumina",
+    "lumina2": "Lumina 2",
+    "hunyuan": "HunyuanDiT",
+    "kolors": "Kolors",
+    "auraflow": "AuraFlow",
+    "amused": "Amused",
+    "cogview3": "CogView3",
+    "cogview4": "CogView4",
+    "wuerstchen": "Würstchen",
+    "generic": "Diffusers",
+    "flux": "Flux",
+    "chroma": "Chroma",
+}
+# Values the UI may set by hand.  "" clears the override (back to auto-detect).
+VARIANT_CHOICES = tuple(VARIANT_LABEL)
+_VARIANTS_FILE = DATA / "variants.json"
+_VARIANT_LOCK = threading.Lock()
+# safetensors metadata keys that sometimes name the base checkpoint
+_VARIANT_META_KEYS = (
+    "base_model",
+    "modelspec.title",
+    "ss_output_name",
+    "ss_sd_model_name",
+    "ss_training_comment",
+    "modelspec.architecture",
+    "ss_base_model_version",
+    "civitai_model_name",
+)
+
+
+def _variant_hint(text: str) -> str | None:
+    """Guess the checkpoint lineage from a filename / metadata string."""
+    t = re.sub(r"[_\-./\\|:]+", " ", str(text or "")).lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return None
+    if re.search(r"noob\s?ai", t):
+        return "noobai"
+    # `_IL` / `- IL` suffixes are the common Illustrious marker; the full word
+    # is matched as a substring because `myIllustriousSDXL` has no boundary.
+    if re.search(r"illustrious", t) or re.search(r"\bil\b", t):
+        return "illustrious"
+    if re.search(r"pony", t):
+        return "pony"
+    if re.search(r"\bchroma", t):
+        return "chroma"
+    if re.search(r"\bflux", t):
+        return "flux"
+    return None
+
+
+def _override_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def load_variant_overrides() -> dict[str, str]:
+    try:
+        raw = json.loads(_VARIANTS_FILE.read_text("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[variants] อ่าน {_VARIANTS_FILE} ไม่ได้: {exc}", flush=True)
+        return {}
+    paths = raw.get("paths") if isinstance(raw, dict) else None
+    if not isinstance(paths, dict):
+        return {}
+    return {str(k): str(v) for k, v in paths.items() if str(v).strip()}
+
+
+def set_variant(path: str | Path, variant: str) -> dict:
+    """Persist (or clear) a manual variant override for one file."""
+    key = _override_key(Path(path))
+    variant = str(variant or "").strip().lower()
+    if variant and variant not in VARIANT_CHOICES:
+        raise ValueError(f"variant ไม่รู้จัก: {variant}")
+    with _VARIANT_LOCK:
+        overrides = load_variant_overrides()
+        if variant:
+            overrides[key] = variant
+        else:
+            overrides.pop(key, None)
+        _VARIANTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _VARIANTS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"paths": overrides}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(_VARIANTS_FILE)
+    return {"path": key, "variant": variant, "overrides": len(overrides)}
+
+
+def _variant_for(
+    path: Path, family: str | None, meta: dict | None, overrides: dict[str, str]
+) -> tuple[str, str]:
+    """Return (variant, source); source is override / name / metadata / family."""
+    key = _override_key(path)
+    if key in overrides:
+        return overrides[key], "override"
+    found = _variant_hint(path.stem)
+    if found:
+        return found, "name"
+    for name in _VARIANT_META_KEYS:
+        value = (meta or {}).get(name)
+        if not value:
+            continue
+        found = _variant_hint(str(value))
+        if found:
+            return found, "metadata"
+    return (family or "any"), "family"
+
+
+def _safetensors_meta(path: Path) -> dict:
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as handle:
+        return handle.metadata() or {}
+
+
+def _model_entry(
+    path: Path,
+    family: str,
+    kind: str,
+    source: Path,
+    meta: dict | None = None,
+    overrides: dict[str, str] | None = None,
+    pipeline_class: str = "",
+    reason: str = "",
+    display_name: str | None = None,
+) -> dict:
+    profile = FAMILY_PROFILES.get(family) or FAMILY_PROFILES["generic"]
+    supported = bool(profile.get("supported", True)) and not reason
+    if supported and kind == "single" and family not in SINGLE_FILE_FAMILIES:
+        supported = False
+        reason = (
+            "ไฟล์ .safetensors เดี่ยวโหลดไม่ได้สำหรับสถาปัตยกรรมนี้ — "
+            "ต้องใช้โฟลเดอร์ diffusers"
+        )
+    if not supported and not reason:
+        reason = profile.get("reason") or "ยังไม่รองรับสถาปัตยกรรมนี้"
+    defaults = dict(profile["defaults"])
+    if kind == "diffusers":
+        native = _resolution_from_dir(path, family)
+        if native:
+            defaults["width"] = native
+            defaults["height"] = native
     available = files_ready(path) if family == "sana" and path == MODEL_DIR else True
+    variant, variant_source = _variant_for(path, family, meta, overrides or {})
+    name = display_name or (MODEL_LABEL if path == MODEL_DIR else path.stem)
     return {
         "id": MODEL_ID if path == MODEL_DIR else _slug(path, family),
-        "name": MODEL_LABEL if path == MODEL_DIR else path.stem,
+        "name": name,
         "family": family,
         "family_label": FAMILY_LABEL.get(family, family),
+        "variant": variant,
+        "variant_label": VARIANT_LABEL.get(variant, variant),
+        "variant_source": variant_source,
         "kind": kind,
+        "pipeline_class": pipeline_class,
         "path": str(path),
         "source": str(source),
         "available": available,
-        "defaults": FAMILY_DEFAULTS[family],
-        "capabilities": CAPABILITIES[family],
+        "supported": supported,
+        "unsupported_reason": reason if not supported else "",
+        "trainable": supported and family in TRAINABLE_FAMILIES,
+        "defaults": defaults,
+        "capabilities": profile["caps"],
     }
 
 
+def _inside_diffusers(path: Path, base: Path) -> bool:
+    """True when `path` sits inside a diffusers folder (has model_index.json)."""
+    try:
+        parent = path.parent
+    except OSError:
+        return False
+    while True:
+        if (parent / "model_index.json").is_file():
+            return True
+        if parent == base or parent == parent.parent:
+            return False
+        parent = parent.parent
+
+
+# Sub-folders of models/ that never contain base checkpoints.  Without this
+# the recursive scan would list every LoRA / upscaler as a broken checkpoint.
+_NON_MODEL_DIRS = {
+    "loras",
+    "lora",
+    "upscalers",
+    "upscale",
+    "vae",
+    "embeddings",
+    "controlnet",
+    "datasets",
+    "dataset",
+    "data",
+    "cache",
+    "tmp",
+}
+
+
 def discover_models() -> list[dict]:
+    overrides = load_variant_overrides()
     models: list[dict] = [
-        _model_entry(
-            MODEL_DIR, "sana", "diffusers", MODEL_DIR.parent
-        )
+        _model_entry(MODEL_DIR, "sana", "diffusers", MODEL_DIR.parent, overrides=overrides)
     ]
     seen = {MODEL_DIR.resolve()}
     seen_files: set[tuple[str, int]] = set()
@@ -260,11 +867,17 @@ def discover_models() -> list[dict]:
         if not base.is_dir():
             continue
         try:
-            children = sorted(base.iterdir(), key=lambda p: p.name.lower())
+            candidates = sorted(base.rglob("*"), key=lambda p: str(p).lower())
         except OSError:
             continue
-        for path in children:
-            if path.name.startswith("."):
+        for path in candidates:
+            try:
+                rel_parts = path.relative_to(base).parts
+            except ValueError:
+                rel_parts = path.parts
+            if any(part.startswith(".") for part in rel_parts):
+                continue
+            if rel_parts and rel_parts[0].lower() in _NON_MODEL_DIRS:
                 continue
             try:
                 resolved = path.resolve()
@@ -272,25 +885,79 @@ def discover_models() -> list[dict]:
                 resolved = path
             if resolved in seen:
                 continue
-            if path.is_dir() and (path / "model_index.json").is_file():
-                family = _family_from_dir(path)
-                if family:
-                    seen.add(resolved)
-                    models.append(_model_entry(path, family, "diffusers", base))
-            elif path.is_file() and path.suffix.lower() == ".safetensors":
+            if path.is_dir():
+                if not (path / "model_index.json").is_file():
+                    continue
+                family, pipeline_class, reason = _dir_info(path)
+                if family == "sd15" and (_dir_sample_size(path) or 0) >= 96:
+                    family = "sd2"
+                seen.add(resolved)
+                models.append(
+                    _model_entry(
+                        path,
+                        family or "unknown",
+                        "diffusers",
+                        base,
+                        overrides=overrides,
+                        pipeline_class=pipeline_class,
+                        reason=reason,
+                    )
+                )
+            elif path.is_file() and path.suffix.lower() in (
+                ".safetensors",
+                ".ckpt",
+                ".pt",
+                ".pth",
+                ".bin",
+            ):
+                if _inside_diffusers(path, base):
+                    continue
                 try:
                     file_key = (path.name.lower(), path.stat().st_size)
                 except OSError:
                     file_key = None
                 if file_key and file_key in seen_files:
                     continue
-                family = _family_from_file(path)
-                if family:
-                    seen.add(resolved)
-                    if file_key:
-                        seen_files.add(file_key)
-                    models.append(_model_entry(path, family, "single", base))
-    models[1:] = sorted(models[1:], key=lambda m: (m["family"], m["name"].lower()))
+                suffix = path.suffix.lower()
+                if suffix == ".safetensors":
+                    family = _family_from_file(path)
+                    reason = (
+                        ""
+                        if family
+                        else "ตรวจไม่พบสถาปัตยกรรมที่รองรับ (อาจไม่ใช่ checkpoint หรือไฟล์เสีย)"
+                    )
+                else:
+                    # Loading .ckpt/.pt needs torch.load (slow + unsafe).  Show
+                    # them instead of hiding the file, with a conversion hint.
+                    family = None
+                    reason = f"ไฟล์ {suffix} ยังไม่รองรับ — แปลงเป็น .safetensors ก่อน"
+                seen.add(resolved)
+                if file_key:
+                    seen_files.add(file_key)
+                try:
+                    meta = _safetensors_meta(path) if suffix == ".safetensors" else {}
+                except Exception:  # noqa: BLE001
+                    meta = {}
+                models.append(
+                    _model_entry(
+                        path,
+                        family or "unknown",
+                        "single",
+                        base,
+                        meta=meta,
+                        overrides=overrides,
+                        reason=reason,
+                    )
+                )
+    # Supported models first, then by family/name so the picker is predictable.
+    models[1:] = sorted(
+        models[1:],
+        key=lambda m: (
+            0 if m.get("supported") else 1,
+            m["family"],
+            m["name"].lower(),
+        ),
+    )
     return models
 
 
@@ -303,6 +970,7 @@ def _lora_family(path: Path) -> str | None:
 
 def discover_loras() -> list[dict]:
     items: list[dict] = []
+    overrides = load_variant_overrides()
     seen: set[Path] = set()
     seen_names: set[tuple[str, int]] = set()
     for base in LORA_SCAN_DIRS:
@@ -364,6 +1032,7 @@ def discover_loras() -> list[dict]:
                 rank = int(meta.get("rank"))
             except (TypeError, ValueError, AttributeError):
                 rank = None
+            variant, variant_source = _variant_for(path, family, meta, overrides)
             items.append(
                 {
                     "id": _slug(path, family or "any"),
@@ -371,6 +1040,9 @@ def discover_loras() -> list[dict]:
                     "path": str(path),
                     "family": family,
                     "family_label": FAMILY_LABEL.get(family or "", "ใช้ได้ทุกโมเดล"),
+                    "variant": variant,
+                    "variant_label": VARIANT_LABEL.get(variant, variant),
+                    "variant_source": variant_source,
                     "size": size,
                     "rank": rank,
                     "source": str(base),
@@ -581,7 +1253,6 @@ def _prepare_inpaint_inputs(
 # implements the img2img loop manually with the SAME SanaPipeline, so SANA
 # needs no pipeline reload at all.
 HIRES_MAX = 2048
-HIRES_FAMILIES = ("sana", "sdxl", "sd15")
 
 
 def _hires_params(params: dict, family: str | None, width: int, height: int) -> dict | None:
@@ -618,6 +1289,25 @@ def _upscale_image(image, width: int, height: int):
 
     resample = getattr(Image, "Resampling", Image).LANCZOS
     return image.resize((width, height), resample)
+
+
+def _filter_pipe_kwargs(pipe, kwargs: dict) -> dict:
+    """Drop keyword arguments a pipeline's __call__ does not accept.
+
+    Generic diffusers pipelines differ in what they take (e.g. some have no
+    `negative_prompt` or no `callback_on_step_end`).  Filtering keeps newly
+    detected architectures usable without a per-model branch.
+    """
+    try:
+        params = inspect.signature(pipe.__call__).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    dropped = [k for k in kwargs if k not in params]
+    if dropped:
+        print(f"[pipeline] ไม่รองรับพารามิเตอร์: {', '.join(dropped)}", flush=True)
+    return {k: v for k, v in kwargs.items() if k in params}
 
 
 # ── regional prompting (SDXL) ──────────────────────────────────────────────
@@ -1056,6 +1746,9 @@ class ModelManager:
 
     def select_model(self, model_id: str) -> dict:
         entry = self.get_model(model_id)
+        if not entry.get("supported", True):
+            reason = entry.get("unsupported_reason") or "ยังไม่รองรับสถาปัตยกรรมนี้"
+            raise ValueError(f"โมเดล {entry['name']} ใช้ไม่ได้: {reason}")
         with self._load_lock:
             had_pipe = self.pipe is not None
             self._drop_pipe()
@@ -1085,12 +1778,16 @@ class ModelManager:
                 raise RuntimeError(
                     f"โมเดล {entry['name']} ยังไม่พร้อม — ตรวจไฟล์ใน {entry['path']}"
                 )
+            if not entry.get("supported", True):
+                reason = entry.get("unsupported_reason") or "ยังไม่รองรับสถาปัตยกรรมนี้"
+                raise RuntimeError(f"โมเดล {entry['name']} ใช้ไม่ได้: {reason}")
             if torch is None:
                 raise RuntimeError(
                     "ยังไม่ได้ติดตั้ง PyTorch — รัน engine/setup.sh ก่อน "
                     "(หรือตรวจว่า venv ใช้งานได้)"
                 )
             family = entry["family"]
+            profile = FAMILY_PROFILES.get(family) or FAMILY_PROFILES["generic"]
             model_path = Path(entry["path"])
             if family == "sana" and not files_ready(model_path):
                 if model_path != MODEL_DIR:
@@ -1104,6 +1801,8 @@ class ModelManager:
             self._set("loading", loading_msg)
             if status_cb:
                 status_cb(loading_msg)
+            dtype_name = profile.get("dtype", "float16")
+            dtype = torch.bfloat16 if dtype_name == "bfloat16" else torch.float16
             pipe = None
             if family == "sana":
                 from diffusers import SanaPipeline
@@ -1119,49 +1818,45 @@ class ModelManager:
                     pipe.vae.to(torch.bfloat16)
                 except Exception as exc:  # noqa: BLE001
                     print("dtype move warning:", exc, flush=True)
-            elif family in ("sdxl", "sd15"):
-                dtype = torch.float16
-                if family == "sdxl":
-                    if kind == "inpaint":
-                        from diffusers import (
-                            StableDiffusionXLInpaintPipeline as Pipeline,
-                        )
-                    elif kind == "img2img":
-                        from diffusers import (
-                            StableDiffusionXLImg2ImgPipeline as Pipeline,
-                        )
-                    else:
-                        from diffusers import (
-                            StableDiffusionXLPipeline as Pipeline,
-                        )
-
-                    if entry["kind"] == "single":
-                        pipe = Pipeline.from_single_file(
-                            str(model_path), torch_dtype=dtype, use_safetensors=True
-                        )
-                    else:
-                        pipe = Pipeline.from_pretrained(
-                            str(model_path), torch_dtype=dtype, low_cpu_mem_usage=True
-                        )
-                else:
-                    if kind == "img2img":
-                        from diffusers import (
-                            StableDiffusionImg2ImgPipeline as Pipeline,
-                        )
-                    else:
-                        from diffusers import StableDiffusionPipeline as Pipeline
-
-                    if entry["kind"] == "single":
-                        pipe = Pipeline.from_single_file(
-                            str(model_path), torch_dtype=dtype, use_safetensors=True
-                        )
-                    else:
-                        pipe = Pipeline.from_pretrained(
-                            str(model_path), torch_dtype=dtype, low_cpu_mem_usage=True
-                        )
-                pipe.set_progress_bar_config(disable=True)
             else:
-                raise RuntimeError(f"ยังไม่รองรับตระกูลโมเดล: {family}")
+                # Resolve the pipeline class: known families use the table,
+                # generic ones carry the class name from model_index.json.
+                classes = PIPELINE_CLASSES.get(family) or {}
+                class_name = classes.get(kind) or classes.get("t2i") or entry.get("pipeline_class") or ""
+                if kind != "t2i" and kind not in classes:
+                    raise RuntimeError(
+                        f"ตระกูล {FAMILY_LABEL.get(family, family)} ไม่มี pipeline สำหรับโหมด {kind}"
+                    )
+                if not class_name:
+                    raise RuntimeError(
+                        f"ยังไม่รองรับตระกูลโมเดล: {family} (ไม่พบ pipeline class)"
+                    )
+                import diffusers
+
+                Pipeline = getattr(diffusers, class_name, None)
+                if Pipeline is None:
+                    raise RuntimeError(
+                        f"diffusers ที่ติดตั้งไม่มี {class_name} — อัปเดต diffusers ก่อน"
+                    )
+                if entry["kind"] == "single":
+                    pipe = Pipeline.from_single_file(
+                        str(model_path), torch_dtype=dtype, use_safetensors=True
+                    )
+                else:
+                    pipe = Pipeline.from_pretrained(
+                        str(model_path), torch_dtype=dtype, low_cpu_mem_usage=True
+                    )
+                pipe.set_progress_bar_config(disable=True)
+                if dtype_name == "bfloat16":
+                    # Some pipelines keep fp32 components (text encoders / VAE)
+                    # after loading; match the requested dtype where possible.
+                    for attr in ("vae", "text_encoder", "text_encoder_2", "text_encoder_3"):
+                        component = getattr(pipe, attr, None)
+                        if component is not None and hasattr(component, "to"):
+                            try:
+                                component.to(dtype)
+                            except Exception:  # noqa: BLE001
+                                pass
 
             try:
                 pipe.enable_model_cpu_offload()
@@ -1174,7 +1869,7 @@ class ModelManager:
             self.pipe = pipe
             self.family = family
             self.pipe_kind = kind
-            if family == "sdxl":
+            if CAPABILITIES.get(family, {}).get("regional"):
                 try:
                     count = install_regional_processors(pipe)
                     print(f"[regional] wrapped {count} attention layers", flush=True)
@@ -1344,7 +2039,8 @@ class ModelManager:
         requested_family = self.get_model(requested).get("family")
         kind = (
             "inpaint"
-            if params.get("inpaint") and requested_family == "sdxl"
+            if params.get("inpaint")
+            and CAPABILITIES.get(requested_family, {}).get("inpaint")
             else "t2i"
         )
         self.ensure_ready(
@@ -1364,7 +2060,10 @@ class ModelManager:
         )
         batch = max(1, min(4, int(p.get("batch") or 1)))
         seed = int(p.get("seed") if p.get("seed") is not None else -1)
-        enhance = bool(p.get("enhance", defaults.get("enhance", False))) and self.family == "sana"
+        enhance = bool(p.get("enhance", defaults.get("enhance", False))) and bool(
+            CAPABILITIES.get(self.family, {}).get("enhance")
+        )
+        # SANA-only prompt cleanup kwarg; other pipelines ignore it.
         clean_caption = bool(p.get("clean_caption", False)) and self.family == "sana"
         max_seq = max(64, min(512, int(p.get("max_sequence_length") or 300)))
         sampler = p.get("sampler") or defaults.get("sampler") or "dpm"
@@ -1376,7 +2075,7 @@ class ModelManager:
         loras = self._apply_loras(p.get("loras") or [])
         self._set_sampler(sampler)
 
-        regions = normalize_regions(p.get("regions")) if self.family == "sdxl" else []
+        regions = normalize_regions(p.get("regions")) if CAPABILITIES.get(self.family, {}).get("regional") else []
         regional = None
         if regions:
             try:
@@ -1467,7 +2166,7 @@ class ModelManager:
                 if not enhance:
                     # [] disables SANA's in-context "complex human instruction"
                     kwargs["complex_human_instruction"] = []
-            elif p.get("inpaint") and self.family == "sdxl":
+            elif p.get("inpaint") and CAPABILITIES.get(self.family, {}).get("inpaint"):
                 init_path = p.get("init_image")
                 mask_path = p.get("mask_image")
                 if not init_path or not mask_path:
@@ -1519,7 +2218,7 @@ class ModelManager:
                 )
 
             t0 = time.perf_counter()
-            output = pipe_to_use(**kwargs)
+            output = pipe_to_use(**_filter_pipe_kwargs(pipe_to_use, kwargs))
             elapsed = time.perf_counter() - t0
             image = output.images[0]
 
@@ -1687,7 +2386,7 @@ class ModelManager:
                         negative_pooled_prompt_embeds=n_pooled,
                         cross_attention_kwargs={"regional": regional2},
                     )
-                output = self.pipe(**kwargs)
+                output = self.pipe(**_filter_pipe_kwargs(self.pipe, kwargs))
                 image = output.images[0]
             hires_elapsed = time.perf_counter() - t0
 

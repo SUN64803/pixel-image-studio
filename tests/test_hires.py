@@ -52,4 +52,10 @@ def test_upscale_image():
 
 
 def test_hires_families_constant():
-    assert se.HIRES_FAMILIES == ("sana", "sdxl", "sd15")
+    # Derived from capabilities: every hires family needs an img2img pipeline
+    # (SANA refines with the same t2i pipeline, so it is the exception).
+    assert "sana" in se.HIRES_FAMILIES
+    assert "sdxl" in se.HIRES_FAMILIES
+    assert "sd15" in se.HIRES_FAMILIES
+    assert "pixart" not in se.HIRES_FAMILIES
+    assert "generic" not in se.HIRES_FAMILIES

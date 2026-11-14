@@ -475,6 +475,13 @@ class LoraDeleteRequest(BaseModel):
     id: str
 
 
+class VariantRequest(BaseModel):
+    # absolute path of a LoRA or checkpoint file (as returned by /api/loras
+    # and /api/models); "" clears the manual override.
+    path: str = Field(..., max_length=2000)
+    variant: str = Field(default="", max_length=32)
+
+
 # ── API ──────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def api_health():
@@ -543,6 +550,27 @@ def api_loras_delete(req: LoraDeleteRequest):
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(400, f"ลบ LoRA ไม่ได้: {exc}") from exc
+
+
+@app.get("/api/variants")
+def api_variants():
+    """Manual variant overrides + the values the UI may set."""
+    return {
+        "overrides": se.load_variant_overrides(),
+        "choices": list(se.VARIANT_CHOICES),
+        "labels": se.VARIANT_LABEL,
+    }
+
+
+@app.post("/api/variants")
+def api_variant_set(req: VariantRequest):
+    path = (req.path or "").strip()
+    if not path:
+        raise HTTPException(400, "ต้องระบุ path ของไฟล์")
+    try:
+        return {"ok": True, **se.set_variant(path, req.variant)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ── prompt presets (บันทึก/ใช้/นำเข้า prompt + settings) ────────────────────
@@ -618,12 +646,15 @@ def api_presets_import(req: PresetImportRequest):
             blob = ppres.parse_a1111(text)
             if not (blob["prompt"] or blob["negative"] or blob["settings_str"]):
                 raise HTTPException(400, "ไม่พบ prompt/parameters ที่อ่านได้ในข้อความ")
-            settings = ppres.settings_from_a1111(blob["settings_str"], blob["prompt"])
+            settings = ppres.settings_from_a1111(
+                blob["settings_str"], blob["prompt"], blob["negative"]
+            )
             cleaned = settings.pop("cleaned_prompt", None)
+            cleaned_neg = settings.pop("cleaned_negative", None)
             entries.append({
                 "name": (req.name or "").strip() or "A1111 import",
                 "prompt": cleaned or blob["prompt"],
-                "negative": blob["negative"],
+                "negative": cleaned_neg if cleaned_neg else blob["negative"],
                 "settings": settings,
             })
     if not entries:
@@ -757,6 +788,9 @@ def api_generate(req: GenerateRequest):
         raise HTTPException(400, str(exc)) from exc
     if not entry.get("available"):
         raise HTTPException(400, f"โมเดล {entry['name']} ยังไม่พร้อมใช้งาน")
+    if not entry.get("supported", True):
+        reason = entry.get("unsupported_reason") or "ยังไม่รองรับสถาปัตยกรรมนี้"
+        raise HTTPException(400, f"โมเดล {entry['name']} ใช้ไม่ได้: {reason}")
     loras: list[dict] = []
     for item in req.loras:
         lora_id = (item.id or "").strip()
@@ -769,6 +803,7 @@ def api_generate(req: GenerateRequest):
         loras.append({"id": lora_id, "weight": max(0.0, min(2.0, weight))})
     params = req.model_dump()
     family = entry.get("family")
+    caps = se.CAPABILITIES.get(family) or {}
     params.update(
         prompt=prompt,
         width=se.norm_size(req.width),
@@ -780,15 +815,15 @@ def api_generate(req: GenerateRequest):
         max_sequence_length=max(64, min(512, int(req.max_sequence_length))),
         model_id=entry["id"],
         loras=loras,
-        regions=se.normalize_regions([r.model_dump() for r in req.regions]) if entry.get("family") == "sdxl" else [],
-        inpaint=req.inpaint and entry.get("family") == "sdxl",
+        regions=se.normalize_regions([r.model_dump() for r in req.regions]) if caps.get("regional") else [],
+        inpaint=bool(req.inpaint and caps.get("inpaint")),
         init_image=req.init_image if req.inpaint else None,
         mask_image=req.mask_image if req.inpaint else None,
         strength=max(0.0, min(1.0, float(req.strength))),
         hires={
             "enabled": bool(req.hires.enabled)
             and family in se.HIRES_FAMILIES
-            and not (req.inpaint and family == "sdxl"),
+            and not (req.inpaint and caps.get("inpaint")),
             "scale": max(1.0, min(2.0, float(req.hires.scale))),
             "strength": max(0.05, min(0.75, float(req.hires.strength))),
         },
@@ -1248,7 +1283,7 @@ def api_train_start(ds_id: str, req: TrainRequest):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     family = base_model.get("family")
-    if family not in ("sana", "sdxl"):
+    if family not in se.TRAINABLE_FAMILIES:
         raise HTTPException(
             400,
             "ยังไม่รองรับการเทรนโมเดลตระกูล "
@@ -1667,12 +1702,22 @@ def _assist_select_model(args: dict) -> tuple[dict, object]:
     if not target:
         raise ValueError("ต้องระบุชื่อหรือ id ของโมเดล")
     models = manager.list_models().get("models") or []
-    found = next((m for m in models if str(m.get("id")).lower() == target), None)
+    usable = [m for m in models if m.get("supported", True)]
+
+    def _find(pool):
+        found = next((m for m in pool if str(m.get("id")).lower() == target), None)
+        if found is None:
+            found = next((m for m in pool if target in str(m.get("name") or "").lower()), None)
+        if found is None:
+            found = next((m for m in pool if target in str(m.get("id") or "").lower()), None)
+        return found
+
+    found = _find(usable)
     if found is None:
-        found = next((m for m in models if target in str(m.get("name") or "").lower()), None)
-    if found is None:
-        found = next((m for m in models if target in str(m.get("id") or "").lower()), None)
-    if found is None:
+        blocked = _find(models)
+        if blocked is not None:
+            reason = blocked.get("unsupported_reason") or "ยังไม่รองรับสถาปัตยกรรมนี้"
+            raise ValueError(f"โมเดล {blocked.get('name')} ใช้ไม่ได้: {reason}")
         raise ValueError(f"ไม่พบโมเดล “{args.get('target')}”")
     old = manager.current_id
     manager.select_model(found.get("id"))

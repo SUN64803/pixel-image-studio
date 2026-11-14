@@ -160,41 +160,138 @@ def _parse_kv(settings_str: str) -> dict:
     return out
 
 
-def settings_from_a1111(settings_str: str, prompt: str = "") -> dict:
-    """Map an A1111 settings line onto the studio form fields."""
+# A1111/Forge keys the studio has no field for.  Reported to the UI so an
+# import never drops half of the source settings without telling the user.
+_IGNORED_SETTINGS = {
+    "hires upscale": "Hires upscale",
+    "hires steps": "Hires steps",
+    "hires upscaler": "Hires upscaler",
+    "denoising strength": "Denoising strength",
+    "clip skip": "Clip skip",
+    "vae": "VAE",
+    "vae hash": "VAE hash",
+    "ensd": "ENSD",
+    "version": "Version",
+    "lora hashes": "LoRA hashes",
+    "ti hashes": "TI hashes",
+    "schedule type": "Schedule type",
+    "distilled cfg scale": "Distilled CFG",
+    "ngms": "NGMS",
+}
+
+
+def normalize_prompt_syntax(text: str) -> tuple[str, list[str]]:
+    """Strip A1111 weight syntax that diffusers cannot use.
+
+    The studio does not run Compel, so `(word:1.2)`, `[word]`, `{word}` and
+    `BREAK` would reach the tokenizer as literal characters.  Keeping the
+    words and dropping the markers preserves the meaning of the prompt.
+    """
+    notes: list[str] = []
+    s = str(text or "")
+    if not s.strip():
+        return "", notes
+    if re.search(r"\bBREAK\b", s):
+        s = re.sub(r"\bBREAK\b", ", ", s)
+        notes.append("แทน BREAK ด้วย ','")
+    changed = False
+    for _ in range(4):  # nested emphasis up to 4 levels
+        new = re.sub(r"\(([^()]*?):\s*-?[0-9]*\.?[0-9]+\s*\)", r"\1", s)
+        new = re.sub(r"\(([^()]*)\)", r"\1", new)
+        new = re.sub(r"\[([^\[\]]*)\]", r"\1", new)
+        new = re.sub(r"\{([^{}]*)\}", r"\1", new)
+        if new == s:
+            break
+        s = new
+        changed = True
+    if changed:
+        notes.append("ลบวงเล็บ/น้ำหนักคำ (A1111 syntax) — engine ไม่รองรับ")
+    # BREAK → "," plus bracket removal can leave ", ," runs behind.
+    s = re.sub(r"\s*,\s*", ", ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" ,")
+    return s, notes
+
+
+def settings_from_a1111(settings_str: str, prompt: str = "", negative: str = "") -> dict:
+    """Map an A1111 settings line onto the studio form fields.
+
+    Only fields that were really present in the source are returned: a missing
+    key must not overwrite the form with a default (that used to set steps=2
+    and CFG=1 on every preset without settings).  `notes` explains clamps and
+    prompt-syntax normalisation, `ignored` lists A1111 keys the studio cannot
+    use, so the UI can report them instead of dropping them silently.
+    """
     kv = _parse_kv(settings_str)
     settings: dict = {}
+    notes: list[str] = []
+
     try:
-        settings["steps"] = max(2, min(60, int(float(kv.get("steps", 0)) or 0)))
+        steps = int(float(kv.get("steps", 0)) or 0)
     except (TypeError, ValueError):
-        pass
+        steps = 0
+    if steps > 0:
+        clamped = max(2, min(60, steps))
+        if clamped != steps:
+            notes.append(f"steps {steps} → {clamped} (รองรับ 2–60)")
+        settings["steps"] = clamped
+
     try:
-        settings["guidance"] = max(1.0, min(15.0, float(kv.get("cfg scale", 0)) or 0))
+        guidance = float(kv.get("cfg scale", 0) or 0)
     except (TypeError, ValueError):
-        pass
+        guidance = 0.0
+    if guidance > 0:
+        clamped_g = max(1.0, min(15.0, guidance))
+        if clamped_g != guidance:
+            notes.append(f"CFG {guidance:g} → {clamped_g:g} (รองรับ 1–15)")
+        settings["guidance"] = clamped_g
+
     size = kv.get("size", "")
     m = re.match(r"(\d+)\s*[x×]\s*(\d+)", size)
     if m:
         w, h = int(m.group(1)), int(m.group(2))
-        settings["width"] = max(256, min(2048, w - w % 32))
-        settings["height"] = max(256, min(2048, h - h % 32))
+        cw = max(256, min(2048, w - w % 32))
+        ch = max(256, min(2048, h - h % 32))
+        if (cw, ch) != (w, h):
+            notes.append(f"ขนาด {w}×{h} → {cw}×{ch} (คูณ 32 · 256–2048)")
+        settings["width"], settings["height"] = cw, ch
+
     try:
         seed = int(kv.get("seed", ""))
-        settings["seed"] = seed
     except (TypeError, ValueError):
-        pass
+        seed = None
+    if seed is not None and seed >= 0:
+        settings["seed"] = seed
+
     sampler = (kv.get("sampler", "") or "").strip().lower()
-    settings["sampler"] = _SAMPLER_MAP.get(sampler, "dpm" if "dpm" in sampler else
-                                           "euler" if "euler" in sampler else "dpm")
+    if sampler:
+        settings["sampler"] = _SAMPLER_MAP.get(
+            sampler,
+            "dpm" if "dpm" in sampler else "euler" if "euler" in sampler else "dpm",
+        )
+        if sampler not in _SAMPLER_MAP:
+            notes.append(f"sampler '{kv.get('sampler')}' → {settings['sampler']}")
+
     model = (kv.get("model", "") or "").strip()
     if model:
         settings["model"] = model
+
+    ignored = [label for key, label in _IGNORED_SETTINGS.items() if key in kv]
+    if ignored:
+        settings["ignored"] = ignored
+
     # LoRA weights come from <lora:name:weight> tags in the prompt
     cleaned_prompt, loras = loras_from_prompt(prompt)
     if loras:
         settings["loras"] = loras
+    cleaned_prompt, prompt_notes = normalize_prompt_syntax(cleaned_prompt)
+    cleaned_negative, neg_notes = normalize_prompt_syntax(negative)
+    notes.extend(prompt_notes)
+    notes.extend(neg_notes)
     settings["cleaned_prompt"] = cleaned_prompt
+    settings["cleaned_negative"] = cleaned_negative
     settings["model_hash"] = (kv.get("model hash", "") or "").strip()
+    if notes:
+        settings["notes"] = notes
     return settings
 
 
@@ -260,10 +357,13 @@ def parse_collection(text: str) -> list[dict]:
             settings_str = p2["settings_str"]
         if p2["prompt"]:
             prompt = p2["prompt"]
-        settings = settings_from_a1111(settings_str, prompt)
+        settings = settings_from_a1111(settings_str, prompt, neg)
         cleaned = settings.pop("cleaned_prompt", None)
         if cleaned:
             prompt = cleaned
+        cleaned_neg = settings.pop("cleaned_negative", None)
+        if cleaned_neg:
+            neg = cleaned_neg
         if not (prompt or neg or settings):
             continue
         presets.append({

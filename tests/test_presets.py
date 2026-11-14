@@ -171,3 +171,72 @@ def test_presets_file_ignored_shape():
             path.unlink(missing_ok=True)
         else:
             path.write_text(backup)
+
+
+def test_settings_from_a1111_invents_no_defaults():
+    # A preset without a Settings: line must not reset the form to steps=2/CFG=1.
+    settings = pp.settings_from_a1111("", "a prompt")
+    for key in ("steps", "guidance", "sampler", "width", "height", "seed", "model"):
+        assert key not in settings
+    assert settings["cleaned_prompt"] == "a prompt"
+    assert settings["cleaned_negative"] == ""
+
+
+def test_settings_from_a1111_reports_ignored_and_clamped():
+    settings = pp.settings_from_a1111(
+        "Steps: 150, CFG scale: 30, Size: 3000x700, Sampler: LMS, "
+        "Clip skip: 2, Hires upscale: 2, Hires upscaler: R-ESRGAN 4x+, "
+        "Denoising strength: 0.45, VAE: sdxl_vae.safetensors",
+        "a prompt",
+    )
+    assert settings["steps"] == 60
+    assert settings["guidance"] == 15.0
+    assert (settings["width"], settings["height"]) == (2048, 672)
+    assert settings["sampler"] == "dpm"
+    assert set(settings["ignored"]) == {
+        "Hires upscale",
+        "Hires upscaler",
+        "Denoising strength",
+        "Clip skip",
+        "VAE",
+    }
+    notes = " | ".join(settings["notes"])
+    assert "steps 150 → 60" in notes
+    assert "CFG 30 → 15" in notes
+    assert "3000×700 → 2048×672" in notes
+    assert "LMS" in notes
+
+
+def test_settings_from_a1111_keeps_valid_values_without_notes():
+    settings = pp.settings_from_a1111(
+        "Steps: 28, CFG scale: 4.5, Size: 832x1216, Sampler: Euler a, Seed: 42",
+        "a prompt",
+    )
+    assert settings["steps"] == 28
+    assert settings["guidance"] == 4.5
+    assert (settings["width"], settings["height"]) == (832, 1216)
+    assert settings["sampler"] == "euler"
+    assert settings["seed"] == 42
+    assert "notes" not in settings and "ignored" not in settings
+
+
+def test_normalize_prompt_syntax_strips_weights_and_break():
+    cleaned, notes = pp.normalize_prompt_syntax(
+        "masterpiece, (best quality:1.3), [low quality], {glow} BREAK bad"
+    )
+    assert cleaned == "masterpiece, best quality, low quality, glow, bad"
+    assert notes  # explains what was rewritten
+
+
+def test_normalize_prompt_syntax_plain_text_is_untouched():
+    cleaned, notes = pp.normalize_prompt_syntax("simple prompt, no syntax")
+    assert cleaned == "simple prompt, no syntax"
+    assert notes == []
+    assert pp.normalize_prompt_syntax("") == ("", [])
+
+
+def test_collection_normalizes_negative_emphasis():
+    entries = pp.parse_collection(COLLECTION)
+    first = entries[0]
+    assert first["negative"] == "bad anatomy, Text"
+    assert "((" not in first["negative"]

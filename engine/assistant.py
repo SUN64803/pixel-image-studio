@@ -543,13 +543,22 @@ def summarize_result(tool: str, result: dict, brain=None) -> str:
         current = result.get("current")
         if not rows:
             return "ไม่พบโมเดล"
+        usable = [r for r in rows if r.get("supported", True)]
+        blocked = [r for r in rows if not r.get("supported", True)]
         body = "\n• ".join(
             f"{'▸ ' if r.get('id') == current else ''}{r.get('name')} ({r.get('id')})"
             f" · {r.get('family_label') or r.get('family') or '—'}"
             f"{'' if r.get('available') else ' · ไฟล์ยังไม่ครบ'}"
-            for r in rows
+            for r in usable
         )
-        return "โมเดลที่สแกนพบ:\n• " + body
+        text = "โมเดลที่สแกนพบ:\n• " + body if body else "ไม่พบโมเดลที่ใช้งานได้"
+        if blocked:
+            text += "\n\nใช้ไม่ได้:\n• " + "\n• ".join(
+                f"{r.get('name')} ({r.get('id')})"
+                f" — {r.get('unsupported_reason') or 'ยังไม่รองรับ'}"
+                for r in blocked
+            )
+        return text
 
     if tool == "gpu_status":
         return (

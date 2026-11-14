@@ -314,6 +314,7 @@
     "รายละเอียดภาพ": "Image details",
     "✦ ใช้การตั้งค่านี้": "✦ Reuse settings",
     "ขยาย 4× (ESRGAN)": "Upscale 4× (ESRGAN)",
+    "ขยาย 2× (ESRGAN)": "Upscale 2× (ESRGAN)",
     "ขยายด้วย Real-ESRGAN (คุณภาพสูงกว่า LANCZOS)":
       "Upscale with Real-ESRGAN (better than LANCZOS)",
     "ภาพใหญ่เกินไปสำหรับขยาย 4× (สูงสุด 8192px)":
@@ -411,6 +412,14 @@
       "No LoRAs yet — import .safetensors files above",
     "ลบ LoRA": "Delete LoRA",
     "น้ำหนัก LoRA": "LoRA weight",
+    "แสดง LoRA ที่ไม่ตรง variant": "Show LoRAs from other variants",
+    "Variant ของโมเดล": "Model variant",
+    "ใช้กรอง LoRA ให้ตรงตระกูล · ระบบเดาจากชื่อไฟล์ก่อน ถ้าผิดให้แก้ที่นี่":
+      "Filters LoRAs by checkpoint lineage · guessed from the file name; fix it here if wrong",
+    "อัตโนมัติ": "Auto",
+    "อัปเดต variant แล้ว": "Variant updated",
+    "ไม่มี LoRA ที่ตรงกับ variant นี้ — เปิด \"แสดง LoRA ที่ไม่ตรง variant\" เพื่อดูรายการ":
+      "No LoRA matches this variant — turn on \"Show LoRAs from other variants\" to see the list",
     "น้ำหนักโซน": "Zone weight",
     "ตัวละคร/วัตถุในโซนนี้…": "character/object in this zone…",
     "ยังไม่มีโมเดลที่เทรนได้ (SANA / SDXL)": "No trainable models (SANA / SDXL)",
@@ -424,6 +433,21 @@
     "กำลังโหลด": "Loading",
     "กำลังดาวน์โหลด": "Downloading",
     "ยังไม่โหลด": "Not loaded",
+    "ไม่รองรับ": "unsupported",
+    "ยังไม่รองรับ": "not supported yet",
+    "ยังไม่พร้อม": "not ready",
+    "ไม่มีโมเดลที่ใช้งานได้": "No usable model",
+    "ไม่พบโมเดลที่ใช้งานได้ — เพิ่มโมเดลหรือกดสแกนใหม่":
+      "No usable model found — add one or press rescan",
+    "ตรวจไม่พบสถาปัตยกรรมที่รองรับ": "No supported architecture detected",
+    "ตรวจไม่พบสถาปัตยกรรมที่รองรับ (อาจไม่ใช่ checkpoint หรือไฟล์เสีย)":
+      "No supported architecture detected (not a checkpoint, or the file is corrupt)",
+    "ไฟล์ .safetensors เดี่ยวโหลดไม่ได้สำหรับสถาปัตยกรรมนี้ — ต้องใช้โฟลเดอร์ diffusers":
+      "Single-file .safetensors cannot be loaded for this architecture — use a diffusers folder",
+    "ต้องใช้ VRAM/RAM มากกว่าที่การ์ดนี้มี (10 GB VRAM / 15 GB RAM) — Flux/Chroma ~9–12B ต้องรัน fp8 ซึ่ง GPU นี้ไม่รองรับ":
+      "Needs more VRAM/RAM than this card has (10 GB VRAM / 15 GB RAM) — Flux/Chroma ~9–12B require fp8, which this GPU does not support",
+    "model_index.json ไม่มี _class_name": "model_index.json has no _class_name",
+    "มีงานกำลังทำงานอยู่ — รอให้เสร็จก่อน": "A job is running — wait for it to finish",
     "ผิดพลาด": "Error",
     "โมเดลพร้อมใช้งาน": "Model ready",
     "กำลังโหลดโมเดล…": "Loading model…",
@@ -785,6 +809,15 @@
 
   // ── dynamic messages: regex on the normalized Thai text ───────────────────
   const PATTERNS = [
+    [/^ไม่ใช่ pipeline สร้างภาพ \((.+)\)$/, (m) => `Not an image-generation pipeline (${m[1]})`],
+    [/^diffusers ที่ติดตั้งไม่รู้จัก (.+)$/, (m) => `Installed diffusers does not know ${m[1]}`],
+    [/^โมเดลนี้ใช้ไม่ได้: (.+)$/, (m) => `This model cannot be used: ${m[1]}`],
+    [/^โมเดล (.+) ใช้ไม่ได้: (.+)$/, (m) => `Model ${m[1]} cannot be used: ${m[2]}`],
+    [/^ไฟล์ (\.\w+) ยังไม่รองรับ — แปลงเป็น \.safetensors ก่อน$/,
+      (m) => `${m[1]} files are not supported yet — convert to .safetensors first`],
+    [/^สแกนโมเดลแล้ว: พบ (\d+) รายการ(.*)$/,
+      (m) => `Model scan complete: ${m[1]} found${m[2] || ""}`],
+    [/^กำลังขยายภาพด้วย ESRGAN (\d+)×…$/, (m) => `Upscaling with ESRGAN ${m[1]}×…`],
     [/^ใช้ preset (.+) แล้ว(.*)$/, (m) => `Applied ${m[1]} preset${m[2] || ""}`],
     [/^ตั้ง steps = ([\d,]+) แล้ว$/, (m) => `Steps set to ${m[1]}`],
     [/^เปลี่ยนโหมดพลังงานเป็น (.+) \((\d+) W\) แล้ว$/,
@@ -1003,6 +1036,11 @@
 
     // prompt presets toasts / confirms
     [/^ใช้พรีเซ็ตแล้ว: (.+)$/, (m) => `Preset applied: ${m[1]}`],
+    [/^โมเดล "(.+)" ไม่มีในระบบ$/, (m) => `Model "${m[1]}" is not installed`],
+    [/^LoRA ไม่มีในระบบ: (.+)$/, (m) => `LoRAs not installed: ${m[1]}`],
+    [/^LoRA ไม่ตรง variant: (.+)$/, (m) => `LoRAs from another variant: ${m[1]}`],
+    [/^นำเข้าไม่ได้: (.+)$/, (m) => `Not imported: ${m[1]}`],
+    [/^ปรับค่า: (.+)$/, (m) => `Adjusted: ${m[1]}`],
     [/^บันทึกพรีเซ็ตแล้ว: (.+)$/, (m) => `Preset saved: ${m[1]}`],
     [/^ลบพรีเซ็ต "(.+)"\?$/, (m) => `Delete preset "${m[1]}"?`],
     [/^LoRA ในพรีเซ็ตไม่มีในระบบ: (.+)$/,

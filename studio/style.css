@@ -250,6 +250,10 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 10px; padding: 8px 12px; font-size: 12px; transition: .15s; white-space: nowrap;
 }
 .ghost-btn:hover { background: #1c2130; border-color: var(--line-2); color: #fff; }
+#modelRescan {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+  display: grid; place-items: center; font-size: 13px; line-height: 1;
+}
 
 /* sticky action bar */
 .panel-actions {
@@ -471,6 +475,10 @@ input[type="range"]::-moz-range-thumb {
   white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
 }
 .lb-actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 16px; }
+.lb-upscale-opts { flex: 1 1 100%; display: flex; gap: 8px; align-items: flex-end; }
+.lb-upscale-opts .mini-field { flex: 0 0 110px; }
+.lb-upscale-opts select { padding: 7px 8px; }
+#lbUpscaleSize { flex: 1 1 auto; text-align: right; padding-bottom: 8px; }
 .btn {
   border: 1px solid var(--line-2); background: #151925; color: #c9d0e2;
   border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 600; transition: .15s;
@@ -777,6 +785,14 @@ input[type="range"]::-moz-range-thumb {
 }
 .lora-weight { width: 100%; padding: 4px 6px; text-align: center; }
 #loraHint { margin: 0 0 10px; }
+/* variant badges + manual override (Pony / Illustrious / …) */
+.lora-showall { margin: 0 0 8px; }
+.lora-mismatch { opacity: .6; }
+.lora-mismatch .lora-tag { border-style: dashed; }
+#loraManagerList .lora-item { grid-template-columns: minmax(0, 1fr) auto auto auto auto; }
+#modelVariantList .lora-item { grid-template-columns: minmax(0, 1fr) auto auto; }
+.lora-variant { max-width: 132px; padding: 3px 6px; font-size: 11px; }
+.lora-note { font-size: 10px; color: var(--muted-2); }
 
 /* regional prompting */
 #regionBox .switch { margin: 4px 0 10px; }

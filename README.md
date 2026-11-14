@@ -18,10 +18,18 @@ window. The interface is available in **English and Thai**.
 
 ## Features
 
-- **Multiple model families** — switch between SANA / SDXL / SD 1.5 from the UI.
-  The engine frees VRAM when switching and reloads lazily.
+- **Multiple model families** — switch between SANA, SDXL, SD 1.5/2.x, SD 3,
+  PixArt, Lumina, HunyuanDiT, Kolors, AuraFlow, Amused, CogView, Würstchen and
+  any other **diffusers text-to-image pipeline** installed in `models/`. The
+  family is detected from `model_index.json` (or safetensors keys for
+  single-file checkpoints), the engine frees VRAM when switching, and reloads
+  lazily. Press ↻ next to the model picker to rescan after adding files.
+  Checkpoints that cannot run on this GPU (e.g. Flux/Chroma ~9–12B, which need
+  fp8) are still listed with the reason instead of being hidden.
 - **LoRA support** — stack adapters with per-LoRA weights (0–2), filtered by
-  model family.
+  model family and checkpoint lineage (SDXL / Pony / Illustrious / NoobAI).
+  The lineage is guessed from the file name or safetensors metadata and can be
+  overridden per file in **Settings → Model variant**.
 - **Train your own LoRA (SANA / SDXL)** — create a dataset, import images,
   write captions, choose the base model, set rank/steps/LR and queue training.
   SANA uses flow-matching; SDXL trains a DDPM LoRA on the UNet. Results are
@@ -31,15 +39,17 @@ window. The interface is available in **English and Thai**.
 - **Inpainting (SDXL)** — edit a masked region.
 - **Hires fix (SANA / SDXL / SD 1.5)** — generate at a base size, then upscale
   and refine (1–2×, adjustable denoise).
-- **ESRGAN upscale** — upscale any image in the lightbox with Real-ESRGAN ×4
-  (pure PyTorch, tiled for small GPUs). The 64 MB model downloads once on first
-  use; the result is saved to history with the source prompt and metadata.
+- **ESRGAN upscale** — upscale any image in the lightbox with Real-ESRGAN
+  (2× or 4×, automatic or fixed tile size). Pure PyTorch, tiled for small GPUs.
+  The 64 MB model downloads once on first use; the result is saved to history
+  with the source prompt and metadata.
 - **Job queue** — queue up to 8 generations, reorder with ▲▼, cancel individual
   jobs with ✕.
 - **Prompt presets** — save prompt + negative + size/steps/CFG/sampler/LoRA
   from the current form, then re-apply with one click (including model and LoRA
-  weights). Import A1111/Forge `parameters` blobs or collection-style text.
-  Stored in `data/prompt_presets.json`.
+  weights). Import A1111/Forge `parameters` blobs or collection-style text;
+  LoRA names are matched loosely and unsupported/clamped settings are reported
+  instead of silently dropped. Stored in `data/prompt_presets.json`.
 - **GPU power modes** — one-click **Low temp / Balanced / Performance**
   presets (60 / 80 / 100 % of the card's default power limit) under
   **Settings → GPU power mode**. A one-time setup installs a tiny root helper;
@@ -61,7 +71,7 @@ window. The interface is available in **English and Thai**.
   local vision image reading through [Ollama](https://ollama.com). Choose the
   assistant model in the drawer; the choice is remembered.
 - **LoRA manager** — import LoRAs from other folders, remove them, inspect size
-  and family.
+  and family, and set the checkpoint lineage used for filtering.
 - **Backup & restore** — export history, images, thumbnails, prompt presets and
   training datasets as one ZIP under **Settings → Backup**; restore merges the
   archive into your current data and never overwrites existing files. Models and
@@ -182,12 +192,14 @@ engine/.venv/bin/python engine/server.py   # headless engine for debugging
 
 ## Usage
 
-1. Choose a **model** at the top of the form (SANA / SDXL / SD 1.5). Size,
-   steps and CFG follow the model.
+1. Choose a **model** at the top of the form. Size, steps and CFG follow the
+   model; unsupported entries are shown disabled with the reason. Nested
+   folders under `models/` are scanned recursively (LoRA/upscaler folders are
+   skipped), and ↻ rescans without restarting the app.
 2. If you have LoRAs, open the **LoRA** section and pick adapters (weights
    0.5–1.0 work well).
 3. Optionally enable **Regional prompt** / Inpaint (SDXL) or **Hires fix**
-   (SANA / SDXL / SD 1.5).
+   (SANA / SDXL / SD 1.5 / SD 2.x / SD 3 / Kolors).
 4. Type an English prompt (SANA understands English best). Use the style
    buttons to append presets.
 5. Pick size/aspect ratio, steps, CFG and seed (`-1` = random).
@@ -207,7 +219,10 @@ engine/.venv/bin/python engine/server.py   # headless engine for debugging
 > To use models/LoRAs already on disk (e.g. from A1111/Forge), edit
 > `models/dirs.json` with `model_dirs` / `lora_dirs`, or set the
 > `IMGS_MODEL_DIRS` / `IMGS_LORA_DIRS` environment variables, then reload the
-> app. `.safetensors` files are discovered automatically.
+> app (or press ↻ in the model row). Diffusers folders, `.safetensors`
+> checkpoints and nested sub-folders are discovered automatically. Families
+> without a matching pipeline in the installed `diffusers` version are listed
+> as unsupported with an explanation.
 
 ## Train a LoRA (SANA / SDXL)
 
@@ -369,7 +384,9 @@ image-studio/
 | POST | `/api/power/setup` | one-time helper install (pkexec prompt) |
 | GET | `/api/models` | model list + default |
 | POST | `/api/models/select` | switch model (`{id}`) — frees VRAM |
-| GET | `/api/loras` | LoRA list + compatible families |
+| GET | `/api/loras` | LoRA list + compatible families/variants |
+| GET | `/api/variants` | manual variant overrides + allowed values |
+| POST | `/api/variants` | set/clear a file's lineage (`{path, variant}`) |
 | POST | `/api/model/load` | preload model (async) |
 | POST | `/api/model/unload` | free memory |
 | POST | `/api/generate` | create job → `{job_id}` (supports `regions`/`hires`); up to 8 queued |
